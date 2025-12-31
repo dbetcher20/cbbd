@@ -1,151 +1,73 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
+import streamlit as st
+import pandas as pd
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# 1. Page Config
+st.set_page_config(page_title="Snowflake Sports Analytics", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+# 2. Establish Snowflake Connection
+def get_private_key():
+    p_key_text = st.secrets["connections"]["snowflake"]["private_key_content"]
+    passphrase = st.secrets["connections"]["snowflake"].get("private_key_passphrase")
+    
+    p_key_bytes = serialization.load_pem_private_key(
+        p_key_text.encode(),
+        password=passphrase.encode() if passphrase else None,
+        backend=default_backend()
+    ).private_key_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
     )
+    return p_key_bytes
+# We pass the processed key directly into the connection
+conn = st.connection("snowflake", private_key=get_private_key())
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+# 3. Cached Data Fetching
+@st.cache_data(ttl=3600) # Caches results for 1 hour
+def load_snowflake_data(query):
+    # Executes the select statement and returns a Pandas DataFrame
+    return conn.query(query)
 
-    return gdp_df
+st.title("🏆 Snowflake Sports Dashboard")
 
-gdp_df = get_gdp_data()
+# 4. Execute Select Statement
+# Replace 'SPORTS_VIEW' with the actual name of your Snowflake view
+query = "select * from cbb_data.views.dim_team"
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+try:
+    df = load_snowflake_data(query)
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    # 5. Dynamic Sidebar Filters
+    st.sidebar.header("Filters")
+    # Using 'TEAM' as an example column from your Snowflake view
+    teams = df['TEAM_NAME'].unique()
+    selected_teams = st.sidebar.multiselect("Select Teams", teams, default=teams[:2])
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+    filtered_df = df[df['TEAM_NAME'].isin(selected_teams)]
 
-# Add some spacing
-''
-''
+    # 6. Visualizations
+    # col1, col2 = st.columns(2)
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+    # with col1:
+    #     st.subheader("Performance Metric")
+    #     # Replace 'PLAYER' and 'POINTS' with your actual column names
+    #     fig = px.bar(filtered_df, x='PLAYER', y='POINTS', color='TEAM')
+    #     st.plotly_chart(fig, use_container_width=True)
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+    # with col2:
+    #     st.subheader("Metric Correlation")
+    #     # Replace 'ASSISTS' and 'REBOUNDS' with your column names
+    #     fig_scatter = px.scatter(filtered_df, x='ASSISTS', y='REBOUNDS', hover_name='PLAYER')
+    #     st.plotly_chart(fig_scatter, use_container_width=True)
 
-countries = gdp_df['Country Code'].unique()
+    # 7. Raw Data Table
+    with st.expander("View Raw Data from Snowflake"):
+        st.dataframe(filtered_df)
 
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+except Exception as e:
+    st.error(f"Error connecting to Snowflake: {e}")

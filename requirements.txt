@@ -1,2 +1,5 @@
 streamlit
 pandas
+plotly
+snowflake-connector-python
+cryptography
