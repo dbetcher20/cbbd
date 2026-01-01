@@ -112,7 +112,7 @@ elif selection == "⏱️ After Timeout Efficiency":
         total_plays = filtered_ato['PLAYS_RUN'].sum()
         total_pts = filtered_ato['TOTAL_POINTS_SCORED'].sum()
         # Weighted average calculation for PPP
-        avg_ppp = (total_pts / total_plays).round(3) if total_plays > 0 else 0
+        avg_ppp = round(float(total_pts / total_plays), 3) if total_plays > 0 else 0.0
 
         m1, m2, m3 = st.columns(3)
         m1.metric("Total ATO Plays", f"{total_plays:,}")
