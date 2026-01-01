@@ -75,84 +75,67 @@ elif selection == "📊 Team Analysis":
     st.dataframe(filtered_df, use_container_width=True)
 
 elif selection == "⏱️ After Timeout Efficiency":
-    st.title("⏱️ After Timeout (ATO) Efficiency")
+    st.title("⏱️ After Timeout (ATO) Efficiency Comparisons")
+
+    # --- 1. FILTERS ---
+    # To compare a team vs their conference, we need to know which conference they are in
+    team_list = sorted(df_ato['TEAM_NAME'].unique())
+    selected_team = st.selectbox("Select Primary Team", team_list, key="ato_main_team")
     
-    # --- 1. FILTERS (Nested in 3 columns) ---
-    col1, col2, col3 = st.columns(3)
+    # Identify the conference for the selected team
+    target_conf = df_ato[df_ato['TEAM_NAME'] == selected_team]['CONFERENCE'].iloc[0]
     
-    with col1:
-        conf_tier = st.multiselect("Conference Tier", 
-                                   options=sorted(df_ato['CONFERENCE_TYPE'].unique()),
-                                   key="ato_tier")
-    with col2:
-        # Filter conference list based on tier if selected
-        conf_options = df_ato[df_ato['CONFERENCE_TYPE'].isin(conf_tier)] if conf_tier else df_ato
-        conf_list = st.multiselect("Conference", 
-                                   options=sorted(conf_options['CONFERENCE'].unique()),
-                                   key="ato_conf")
-    with col3:
-        # Filter team list based on previous selections
-        team_options = conf_options[conf_options['CONFERENCE'].isin(conf_list)] if conf_list else conf_options
-        selected_teams = st.multiselect("Select Teams", 
-                                        options=sorted(team_options['TEAM_NAME'].unique()),
-                                        key="ato_team_select")
+    # Create the comparison dataset (All teams in that specific conference)
+    conf_df = df_ato[df_ato['CONFERENCE'] == target_conf].copy()
+    # Convert Decimals to floats for Plotly/Math
+    conf_df['POINTS_PER_PLAY'] = conf_df['POINTS_PER_PLAY'].astype(float)
+    conf_df['PLAYS_RUN'] = conf_df['PLAYS_RUN'].astype(float)
 
-    # --- 2. APPLY FILTERS ---
-    # Start with full dataframe and narrow down
-    filtered_ato = df_ato.copy()
-    if conf_tier:
-        filtered_ato = filtered_ato[filtered_ato['CONFERENCE_TYPE'].isin(conf_tier)]
-    if conf_list:
-        filtered_ato = filtered_ato[filtered_ato['CONFERENCE'].isin(conf_list)]
-    if selected_teams:
-        filtered_ato = filtered_ato[filtered_ato['TEAM_NAME'].isin(selected_teams)]
+    # --- 2. RANKED SORTED ORDER (BAR CHART) ---
+    st.subheader(f"Ranked ATO Efficiency: {target_conf} Conference")
+    
+    # Sort teams by efficiency
+    ranked_df = conf_df.groupby('TEAM_NAME')['POINTS_PER_PLAY'].mean().reset_index()
+    ranked_df = ranked_df.sort_values('POINTS_PER_PLAY', ascending=False)
+    
+    # Highlight the selected team in a different color
+    ranked_df['Color'] = ranked_df['TEAM_NAME'].apply(lambda x: '#FF4B4B' if x == selected_team else '#31333F')
 
-    # --- 3. KEY METRICS ---
-    if not filtered_ato.empty:
-        total_plays = filtered_ato['PLAYS_RUN'].sum()
-        total_pts = filtered_ato['TOTAL_POINTS_SCORED'].sum()
-        # Weighted average calculation for PPP
-        avg_ppp = round(float(total_pts / total_plays), 3) if total_plays > 0 else 0.0
+    fig_rank = px.bar(
+        ranked_df,
+        x='POINTS_PER_PLAY',
+        y='TEAM_NAME',
+        orientation='h',
+        text_auto='.3f',
+        color='Color',
+        color_discrete_map="identity",
+        title=f"Who is most efficient in the {target_conf}?"
+    )
+    fig_rank.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
+    st.plotly_chart(fig_rank, use_container_width=True)
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total ATO Plays", f"{total_plays:,}")
-        m2.metric("Total Points", f"{total_pts:,}")
-        m3.metric("Avg Points Per Play", avg_ppp)
+    # --- 3. SCATTERPLOT (VOLUME VS EFFICIENCY) ---
+    st.divider()
+    st.subheader("Efficiency vs. Volume")
+    
+    fig_scatter = px.scatter(
+        conf_df,
+        x='PLAYS_RUN',
+        y='POINTS_PER_PLAY',
+        color='ATTEMPT_QUALITY',
+        hover_name='TEAM_NAME',
+        size='TOTAL_POINTS_SCORED',
+        labels={'PLAYS_RUN': 'Volume (Plays Run)', 'POINTS_PER_PLAY': 'Efficiency (PPP)'},
+        title=f"ATO Comparison for all {target_conf} Teams"
+    )
+    
+    # Add a horizontal line for the conference average efficiency
+    avg_conf_ppp = conf_df['POINTS_PER_PLAY'].mean()
+    fig_scatter.add_hline(y=avg_conf_ppp, line_dash="dash", annotation_text="Conf Avg")
+    
+    st.plotly_chart(fig_scatter, use_container_width=True)
 
-        # --- 4. VISUALS ---
-        st.divider()
-        vis_col1, vis_col2 = st.columns([2, 1])
-
-        with vis_col1:
-            st.subheader("Efficiency by Attempt Quality")
-            # Bar chart comparing PPP across different attempt types
-            fig_bar = px.bar(
-                filtered_ato.groupby('ATTEMPT_QUALITY', as_index=False).agg({'POINTS_PER_PLAY': 'mean'}),
-                x='ATTEMPT_QUALITY',
-                y='POINTS_PER_PLAY',
-                color='ATTEMPT_QUALITY',
-                text_auto='.3f',
-                title="Avg Points Per Play by Category"
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        with vis_col2:
-            st.subheader("Volume Distribution")
-            # Pie chart showing how many plays fall into each quality category
-            fig_pie = px.pie(
-                filtered_ato, 
-                values='PLAYS_RUN', 
-                names='ATTEMPT_QUALITY',
-                hole=0.4
-            )
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        # --- 5. DATA TABLE ---
-        st.subheader("Detailed Performance Breakdown")
-        st.dataframe(
-            filtered_ato[['TEAM_NAME', 'ATTEMPT_QUALITY', 'PLAYS_RUN', 'TOTAL_POINTS_SCORED', 'POINTS_PER_PLAY']],
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.warning("No data found for the selected filters. Please adjust your criteria.")
+    # --- 4. DATA SUMMARY ---
+    with st.expander("View Comparative Metrics"):
+        st.dataframe(conf_df.sort_values(['TEAM_NAME', 'POINTS_PER_PLAY'], ascending=[True, False]))
+        
