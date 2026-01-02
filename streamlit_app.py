@@ -77,90 +77,110 @@ elif selection == "📊 Team Analysis":
 elif selection == "⏱️ After Timeout Efficiency":
     st.title("⏱️ After Timeout (ATO) Efficiency Comparisons")
 
-    # --- 1. DATA PREP & CLEANING ---
-    # Create a UI-friendly copy for this tab
-    df_ato_ui = df_ato.copy()
-    df_ato_ui['POINTS_PER_PLAY'] = df_ato_ui['POINTS_PER_PLAY'].astype(float)
-    df_ato_ui['PLAYS_RUN'] = df_ato_ui['PLAYS_RUN'].astype(float)
-    df_ato_ui['TOTAL_POINTS_SCORED'] = df_ato_ui['TOTAL_POINTS_SCORED'].astype(float)
+    # --- 1. DATA PREP & GLOBAL UI RENAMING ---
+    df_ato_ui = df_ato.copy().rename(columns={
+        'TEAM_NAME': 'Team',
+        'CONFERENCE': 'Conference',
+        'CONFERENCE_TYPE': 'Tier',
+        'ATTEMPT_QUALITY': 'Shot Type',
+        'POINTS_PER_PLAY': 'PPP',
+        'PLAYS_RUN': 'Plays Run',
+        'TOTAL_POINTS_SCORED': 'Total Points'
+    })
+    
+    # Cast and round globally
+    for col in ['PPP', 'Plays Run', 'Total Points']:
+        df_ato_ui[col] = df_ato_ui[col].astype(float).round(2)
 
     # --- 2. FILTERS ---
-    team_list = sorted(df_ato_ui['TEAM_NAME'].unique())
-    selected_team = st.selectbox("Select Primary Team", team_list, key="ato_main_team")
+    team_list = sorted(df_ato_ui['Team'].unique())
+    selected_team = st.selectbox("Select Primary Team", team_list, index=0, key="ato_main_team")
     
-    # Identify context for benchmarking
-    team_info = df_ato_ui[df_ato_ui['TEAM_NAME'] == selected_team].iloc[0]
-    target_conf = team_info['CONFERENCE']
-    target_tier = team_info['CONFERENCE_TYPE']
+    team_info = df_ato_ui[df_ato_ui['Team'] == selected_team].iloc[0]
+    target_conf = team_info['Conference']
+    target_tier = team_info['Tier']
     
-    # Filter datasets for charts
-    conf_df = df_ato_ui[df_ato_ui['CONFERENCE'] == target_conf].copy()
-    tier_df = df_ato_ui[df_ato_ui['CONFERENCE_TYPE'] == target_tier].copy()
+    conf_df = df_ato_ui[df_ato_ui['Conference'] == target_conf].copy()
+    tier_df = df_ato_ui[df_ato_ui['Tier'] == target_tier].copy()
 
-    # --- 3. DYNAMIC SCATTERPLOT WITH TRIPLE BENCHMARKS ---
+    # --- 3. RANKED TOTAL EFFICIENCY ---
+    st.subheader(f"Ranked Total ATO Efficiency: {target_conf}")
+    total_rank_df = conf_df.groupby('Team').agg({'Total Points': 'sum', 'Plays Run': 'sum'}).reset_index()
+    total_rank_df['PPP'] = (total_rank_df['Total Points'] / total_rank_df['Plays Run']).round(2)
+    total_rank_df = total_rank_df.sort_values('PPP', ascending=False)
+    
+    total_rank_df['Color'] = total_rank_df['Team'].apply(lambda x: "#3B12F5" if x == selected_team else '#31333F')
+
+    fig_rank = px.bar(
+        total_rank_df, x='PPP', y='Team', orientation='h',
+        text_auto='.2f', color='Color', color_discrete_map="identity",
+        template="plotly_dark"
+    )
+    fig_rank.update_traces(hovertemplate="Team: %{y}<br>PPP: %{x}<extra></extra>")
+    fig_rank.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
+    st.plotly_chart(fig_rank, use_container_width=True)
+
+    # --- 4. SCATTERPLOT: LABELS & BENCHMARKS ---
     st.divider()
     st.subheader("Efficiency vs. Volume Analysis")
     
-    view_option = st.selectbox(
-        "Select Shot Category",
-        ["Total PPP", "Three Point", "Mid Range", "Attack Basket"],
-        key="scatter_view_select"
-    )
+    view_option = st.selectbox("Select Shot Category", ["Total PPP", "Three Point", "Mid Range", "Attack Basket"])
 
-    # Aggregate data based on view
     if view_option == "Total PPP":
-        plot_df = conf_df.groupby('TEAM_NAME').agg({'TOTAL_POINTS_SCORED':'sum', 'PLAYS_RUN':'sum'}).reset_index()
-        plot_df['PPP'] = plot_df['TOTAL_POINTS_SCORED'] / plot_df['PLAYS_RUN']
-        
-        # Benchmarks
-        global_avg = (df_ato_ui['TOTAL_POINTS_SCORED'].sum() / df_ato_ui['PLAYS_RUN'].sum())
-        tier_avg = (tier_df['TOTAL_POINTS_SCORED'].sum() / tier_df['PLAYS_RUN'].sum())
-        conf_avg = (conf_df['TOTAL_POINTS_SCORED'].sum() / conf_df['PLAYS_RUN'].sum())
+        plot_df = total_rank_df.rename(columns={'PPP': 'y', 'Plays Run': 'x'})
+        g_avg, t_avg, c_avg = df_ato_ui['PPP'].mean(), tier_df['PPP'].mean(), conf_df['PPP'].mean()
     else:
-        plot_df = conf_df[conf_df['ATTEMPT_QUALITY'] == view_option].copy().rename(columns={'POINTS_PER_PLAY': 'PPP'})
-        global_avg = df_ato_ui[df_ato_ui['ATTEMPT_QUALITY'] == view_option]['POINTS_PER_PLAY'].mean()
-        tier_avg = tier_df[tier_df['ATTEMPT_QUALITY'] == view_option]['POINTS_PER_PLAY'].mean()
-        conf_avg = conf_df[conf_df['ATTEMPT_QUALITY'] == view_option]['POINTS_PER_PLAY'].mean()
+        plot_df = conf_df[conf_df['Shot Type'] == view_option].copy().rename(columns={'PPP': 'y', 'Plays Run': 'x'})
+        g_avg = df_ato_ui[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
+        t_avg = tier_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
+        c_avg = conf_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
 
+    # Added 'text' argument for team name labels
     fig_scatter = px.scatter(
-        plot_df, x='PLAYS_RUN', y='PPP', color='TEAM_NAME', size='PLAYS_RUN',
-        labels={'PLAYS_RUN': 'Plays Run', 'PPP': 'Points Per Play'},
-        title=f"{view_option} Efficiency: {target_conf} vs Benchmarks",
-        template="plotly_dark"
+        plot_df, x='x', y='y', color='Team', size='x',
+        text='Team', # <--- Labels added here
+        labels={'x': 'Plays Run', 'y': 'PPP'},
+        title=f"{view_option} Benchmarking", template="plotly_dark"
     )
 
-    # Add the 3 Benchmark Lines
-    fig_scatter.add_hline(y=global_avg, line_dash="dot", line_color="white", annotation_text="Global Avg")
-    fig_scatter.add_hline(y=tier_avg, line_dash="dash", line_color="gray", annotation_text=f"{target_tier} Avg")
-    fig_scatter.add_hline(y=conf_avg, line_dash="solid", line_color="#3B12F5", annotation_text="Conf Avg")
+    # Styling the text labels so they don't overlap the bubbles
+    fig_scatter.update_traces(
+        textposition='top center',
+        hovertemplate="Team: %{customdata[0]}<br>Plays: %{x}<br>PPP: %{y}<extra></extra>",
+        customdata=plot_df[['Team']]
+    )
     
+    colors = {"Global": "white", "Tier": "#00CC96", "Conf": "#3B12F5"}
+    avgs = [("Global", g_avg, "dot"), (f"{target_tier}", t_avg, "dash"), ("Conference", c_avg, "solid")]
+    
+    for label, val, style in avgs:
+        fig_scatter.add_hline(y=val, line_dash=style, line_color=colors.get(label.split()[0], "white"), 
+                              annotation_text=f" {label}: {val:.2f}", annotation_position="top right")
+
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # --- 4. PLAY TYPE PROFILE (STACKED BAR) ---
+    # --- 5. STRATEGY DNA (SORTED BY TOTAL PPP) ---
     st.divider()
-    st.subheader("ATO Play Type Distribution (%)")
-    st.markdown("How teams utilize their timeouts (Shot Selection Profile)")
+    st.subheader("ATO Shot Selection Profile")
+    st.caption("Sorted by Total Team Efficiency (Highest PPP at the top)")
+    
+    # Calculate percentages
+    conf_df['Total Plays'] = conf_df.groupby('Team')['Plays Run'].transform('sum')
+    conf_df['Pct'] = ((conf_df['Plays Run'] / conf_df['Total Plays']) * 100).round(1)
 
-    # Calculate percentages for the stacked bar
-    conf_df['Total Plays'] = conf_df.groupby('TEAM_NAME')['PLAYS_RUN'].transform('sum')
-    conf_df['Pct of Plays'] = (conf_df['PLAYS_RUN'] / conf_df['Total Plays']) * 100
+    # Logic to sort the DNA chart by the Total Efficiency from total_rank_df
+    # We create a list of team names in the order of their total PPP
+    dna_sort_order = total_rank_df['Team'].tolist()[::-1]
 
     fig_stack = px.bar(
-        conf_df,
-        x="TEAM_NAME",
-        y="Pct of Plays",
-        color="ATTEMPT_QUALITY",
-        title=f"Play Type DNA: {target_conf} Conference",
-        labels={"TEAM_NAME": "Team", "Pct of Plays": "Percentage of ATOs (%)", "ATTEMPT_QUALITY": "Shot Type"},
-        barmode="relative", # Creates the 100% stack look
-        template="plotly_dark"
+        conf_df, y="Team", x="Pct", color="Shot Type",
+        text="Pct", orientation='h',
+        title=f"Strategy DNA: {target_conf}",
+        labels={"Pct": "Selection %"},
+        template="plotly_dark",
+        category_orders={"Team": dna_sort_order} # <--- Sorting logic
     )
-    fig_stack.update_layout(yaxis_ticksuffix="%")
+    
+    fig_stack.update_traces(texttemplate='%{text}%', textposition='inside')
+    fig_stack.update_layout(xaxis_ticksuffix="%", yaxis={'categoryorder':'array', 'categoryarray': dna_sort_order})
     st.plotly_chart(fig_stack, use_container_width=True)
-
-    # --- 5. UI FRIENDLY DATA TABLE ---
-    with st.expander("View Raw Comparative Data"):
-        # Rename for UI
-        ui_table = conf_df[['TEAM_NAME', 'ATTEMPT_QUALITY', 'PLAYS_RUN', 'TOTAL_POINTS_SCORED', 'POINTS_PER_PLAY']].copy()
-        ui_table.columns = ['Team Name', 'Shot Type', 'Plays Run', 'Total Points', 'PPP']
-        st.dataframe(ui_table.sort_values(['Team Name', 'PPP'], ascending=[True, False]), hide_index=True)  
