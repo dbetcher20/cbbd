@@ -94,7 +94,11 @@ elif selection == "⏱️ After Timeout Efficiency":
 
     # --- 2. FILTERS ---
     team_list = sorted(df_ato_ui['Team'].unique())
-    selected_team = st.selectbox("Select Primary Team", team_list, index=0, key="ato_main_team")
+    try:
+        default_ix = team_list.index("Duke") 
+    except ValueError:
+        default_ix = 0
+    selected_team = st.selectbox("Select Primary Team", team_list, index=default_ix, key="ato_main_team")
     
     team_info = df_ato_ui[df_ato_ui['Team'] == selected_team].iloc[0]
     target_conf = team_info['Conference']
@@ -181,6 +185,8 @@ elif selection == "⏱️ After Timeout Efficiency":
         category_orders={"Team": dna_sort_order} # <--- Sorting logic
     )
     
-    fig_stack.update_traces(texttemplate='%{text}%', textposition='inside')
+    fig_stack.update_traces(texttemplate='%{text}%', 
+                            hovertemplate="Team: %{y}<br>Percentage: %{x}<extra></extra>",
+                            textposition='inside')
     fig_stack.update_layout(xaxis_ticksuffix="%", yaxis={'categoryorder':'array', 'categoryarray': dna_sort_order})
     st.plotly_chart(fig_stack, use_container_width=True)
