@@ -4,9 +4,7 @@ import plotly.express as px
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 
-# ---------------------------------------------------------
-# 1. PAGE CONFIG & AUTH (Same as before)
-# ---------------------------------------------------------
+# PAGE CONFIG & AUTH
 st.set_page_config(page_title="Snowflake Sports Analytics", layout="wide")
 
 def get_private_key():
@@ -23,61 +21,83 @@ def get_private_key():
         encryption_algorithm=serialization.NoEncryption()
     )
 
-# ---------------------------------------------------------
-# 2. DATA CACHING LAYER
-# ---------------------------------------------------------
+# DATA CACHING
 @st.cache_data(ttl=3600)
 def load_all_data():
     conn = st.connection("snowflake", private_key=get_private_key())
-    
-    # Existing dimension table
     df_teams = conn.query("SELECT * FROM cbb_data.views.dim_team")
-    
-    # New ATO Fact table
     df_ato = conn.query("SELECT * FROM cbb_data.views.fact_ato_results")
-    
-    return df_teams, df_ato
+    df_games = conn.query("SELECT * FROM cbb_data.views.fact_game_team_stats")
+    return df_teams, df_ato, df_games
+df_teams, df_ato, df_games = load_all_data()
 
-# Unpack both dataframes
-df_teams, df_ato = load_all_data()
+team_list = sorted(df_teams['TEAM_NAME'].unique())
+try:
+    default_ix = team_list.index("Duke")
+except ValueError:
+    default_ix = 0
 
-# ---------------------------------------------------------
-# 3. SIDEBAR NAVIGATION
-# ---------------------------------------------------------
+# SIDEBAR NAVIGATION
 with st.sidebar:
-    st.title("Navigation")
-    selection = st.radio("Select a Report", ["🏠 Home", "📊 Team Analysis", "⏱️ After Timeout Efficiency"],
+    st.title("Reports")
+    selection = st.radio("Select an Analytics Report", 
+            ["🏠 Home", 
+             "📊 Team Breakdown", 
+             "⏱️ After Timeout Efficiency"
+             ],
         key="main_nav"
     )
     
     st.divider()
-    st.info("Data cached from Snowflake.")
+    selected_team = st.selectbox("Selected Team Focus", team_list, index=default_ix)
 
-# ---------------------------------------------------------
-# 4. REPORT DISPLAY LOGIC
-# ---------------------------------------------------------
+# REPORT DISPLAYS
 
-# --- HOME PAGE ---
+# * HOME PAGE *
 if selection == "🏠 Home":
-    st.title("🏆 Snowflake Sports Dashboard")
-    st.header("Welcome")
-    st.markdown("Select a report from the sidebar to begin.")
+    st.title("College Basketball - Advanced Analytics")
+    st.header("Welcome to my sports analytics website focusing on college basketball.")
+    st.markdown("This website is designed to tackle situational analytics," \
+    " helping look at the game through a different lens. " \
+    "Select a report on the left to begin.")
 
-# --- TEAM ANALYSIS ---
-elif selection == "📊 Team Analysis":
-    st.title("📊 Team Analysis")
+# * TEAM BREAKDOWN *
+elif selection == "📊 Team Breakdown":
+    st.title(f"📊 {selected_team} Performance Breakdown")
     
-    # Nested filters stay inside the "if" block so they only exist here
-    team_list = sorted(df_teams['TEAM_NAME'].unique())
-    selected_team = st.selectbox("Select Team", team_list, key="team_sel")
-    
-    filtered_df = df_teams[df_teams['TEAM_NAME'] == selected_team]
-    st.dataframe(filtered_df, use_container_width=True)
+    team_games = df_games[df_games['TEAM_NAME'] == selected_team].copy()
+    power_toggle = st.toggle("Filter by Power Conference Opponents")
+    if power_toggle:
+        analysis_df = team_games[team_games['OPPONENT_CONFERENCE_TYPE'] == 'Power']
+    else:
+        analysis_df = team_games
 
+    # * KPI BANS *
+    col1, col2, col3, col4 = st.columns(4)
+    avg_pts = analysis_df['TEAM_POINTS'].mean()
+    win_pts = analysis_df[analysis_df['TEAM_VICTORY_INDICATOR'] == True]['TEAM_POINTS'].mean()
+    loss_pts = analysis_df[analysis_df['TEAM_VICTORY_INDICATOR'] == False]['TEAM_POINTS'].mean()
+
+    col1.metric("Avg Points", f"{avg_pts:.1f}")
+    st.caption(f"Wins: {win_pts:.1f} | Losses: {loss_pts:.1f}")
+    
+    # ... Add more metrics (Steals, Blocks, etc.) similarly ...
+
+    # TREND LINE WITH DROPDOWN
+    st.divider()
+    trend_stat = st.selectbox("Select Trend Statistic", 
+                               ['TEAM_POINTS', 'TEAM_TURNOVERS', 'TEAM_EFFECTIVE_FG_PERCENT'])
+    
+    fig_trend = px.line(team_games, x='GAME_DATE', y=[trend_stat, f'{trend_stat}'],
+                        title=f"{trend_stat} Trend vs Opponents",
+                        labels={'value': 'Stat Value', 'variable': 'Team'},
+                        template="plotly_dark")
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+# * ATO EFFICIENCY *
 elif selection == "⏱️ After Timeout Efficiency":
     st.title("⏱️ After Timeout (ATO) Efficiency Comparisons")
 
-    # --- 1. DATA PREP & GLOBAL UI RENAMING ---
     df_ato_ui = df_ato.copy().rename(columns={
         'TEAM_NAME': 'Team',
         'CONFERENCE': 'Conference',
@@ -88,11 +108,9 @@ elif selection == "⏱️ After Timeout Efficiency":
         'TOTAL_POINTS_SCORED': 'Total Points'
     })
     
-    # Cast and round globally
     for col in ['PPP', 'Plays Run', 'Total Points']:
         df_ato_ui[col] = df_ato_ui[col].astype(float).round(2)
 
-    # --- 2. FILTERS ---
     team_list = sorted(df_ato_ui['Team'].unique())
     try:
         default_ix = team_list.index("Duke") 
@@ -102,17 +120,15 @@ elif selection == "⏱️ After Timeout Efficiency":
     
     team_info = df_ato_ui[df_ato_ui['Team'] == selected_team].iloc[0]
     target_conf = team_info['Conference']
-    target_tier = team_info['Tier']
-    
+    target_tier = team_info['Tier']    
     conf_df = df_ato_ui[df_ato_ui['Conference'] == target_conf].copy()
     tier_df = df_ato_ui[df_ato_ui['Tier'] == target_tier].copy()
 
-    # --- 3. RANKED TOTAL EFFICIENCY ---
+    # * RANKED PPP EFFICIENCY - bar *
     st.subheader(f"Ranked Total ATO Efficiency: {target_conf}")
     total_rank_df = conf_df.groupby('Team').agg({'Total Points': 'sum', 'Plays Run': 'sum'}).reset_index()
     total_rank_df['PPP'] = (total_rank_df['Total Points'] / total_rank_df['Plays Run']).round(2)
     total_rank_df = total_rank_df.sort_values('PPP', ascending=False)
-    
     total_rank_df['Color'] = total_rank_df['Team'].apply(lambda x: "#3B12F5" if x == selected_team else '#31333F')
 
     fig_rank = px.bar(
@@ -124,7 +140,7 @@ elif selection == "⏱️ After Timeout Efficiency":
     fig_rank.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
     st.plotly_chart(fig_rank, use_container_width=True)
 
-    # --- 4. SCATTERPLOT: LABELS & BENCHMARKS ---
+    # * PPP BY TEAM - scatterplot *
     st.divider()
     st.subheader("Efficiency vs. Volume Analysis")
     
@@ -139,15 +155,13 @@ elif selection == "⏱️ After Timeout Efficiency":
         t_avg = tier_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
         c_avg = conf_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
 
-    # Added 'text' argument for team name labels
     fig_scatter = px.scatter(
         plot_df, x='x', y='y', color='Team', size='x',
-        text='Team', # <--- Labels added here
+        text='Team',
         labels={'x': 'Plays Run', 'y': 'PPP'},
         title=f"{view_option} Benchmarking", template="plotly_dark"
     )
 
-    # Styling the text labels so they don't overlap the bubbles
     fig_scatter.update_traces(
         textposition='top center',
         hovertemplate="Team: %{customdata[0]}<br>Plays: %{x}<br>PPP: %{y}<extra></extra>",
@@ -163,17 +177,14 @@ elif selection == "⏱️ After Timeout Efficiency":
 
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # --- 5. STRATEGY DNA (SORTED BY TOTAL PPP) ---
+    # * PPP COMPOSITION - bar *
     st.divider()
     st.subheader("ATO Shot Selection Profile")
     st.caption("Sorted by Total Team Efficiency (Highest PPP at the top)")
     
-    # Calculate percentages
     conf_df['Total Plays'] = conf_df.groupby('Team')['Plays Run'].transform('sum')
     conf_df['Pct'] = ((conf_df['Plays Run'] / conf_df['Total Plays']) * 100).round(1)
 
-    # Logic to sort the DNA chart by the Total Efficiency from total_rank_df
-    # We create a list of team names in the order of their total PPP
     dna_sort_order = total_rank_df['Team'].tolist()[::-1]
 
     fig_stack = px.bar(
@@ -182,7 +193,7 @@ elif selection == "⏱️ After Timeout Efficiency":
         title=f"Strategy DNA: {target_conf}",
         labels={"Pct": "Selection %"},
         template="plotly_dark",
-        category_orders={"Team": dna_sort_order} # <--- Sorting logic
+        category_orders={"Team": dna_sort_order}
     )
     
     fig_stack.update_traces(texttemplate='%{text}%', 
