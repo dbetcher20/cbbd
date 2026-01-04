@@ -3,10 +3,10 @@ import pandas as pd
 import plotly.express as px
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
+import numpy as np
 
 # PAGE CONFIG & AUTH
 st.set_page_config(page_title="Snowflake Sports Analytics", layout="wide")
-
 def get_private_key():
     p_key_text = st.secrets["connections"]["snowflake"]["private_key_content"]
     passphrase = st.secrets["connections"]["snowflake"].get("private_key_passphrase")
@@ -63,41 +63,175 @@ if selection == "🏠 Home":
 
 # * TEAM BREAKDOWN *
 elif selection == "📊 Team Breakdown":
-    st.title(f"📊 {selected_team} Performance Breakdown")
+    # --- 1. DATA PREP & GLOBAL FILTER ---
+    df_games['GAME_DATE'] = pd.to_datetime(df_games['GAME_DATE'])
     
-    team_games = df_games[df_games['TEAM_NAME'] == selected_team].copy()
-    power_toggle = st.toggle("Filter by Power Conference Opponents")
-    if power_toggle:
-        analysis_df = team_games[team_games['OPPONENT_CONFERENCE_TYPE'] == 'Power']
+    # Base dataset for the selected team
+    raw_team_games = df_games[df_games['TEAM_NAME'] == selected_team].copy()
+    
+    st.markdown(f"## 📊 {selected_team} Performance Breakdown")
+    
+    # Master Toggle for Report Context
+    t1, t2 = st.columns([1, 2])
+    with t1:
+        power_filter = st.toggle("⚡ Power Conference Opponents Only", value=False)
+    
+    if power_filter:
+        team_games = raw_team_games[raw_team_games['OPPONENT_CONFERENCE_TYPE'] == 'Power'].copy()
+        filter_status = " (vs. Power Conf)"
     else:
-        analysis_df = team_games
+        team_games = raw_team_games.copy()
+        filter_status = ""
 
-    # * KPI BANS *
-    col1, col2, col3, col4 = st.columns(4)
-    avg_pts = analysis_df['TEAM_POINTS'].mean()
-    win_pts = analysis_df[analysis_df['TEAM_VICTORY_INDICATOR'] == True]['TEAM_POINTS'].mean()
-    loss_pts = analysis_df[analysis_df['TEAM_VICTORY_INDICATOR'] == False]['TEAM_POINTS'].mean()
+    if team_games.empty:
+        st.warning(f"No games found for {selected_team} against Power Conference opponents.")
+        st.stop()
 
-    col1.metric("Avg Points", f"{avg_pts:.1f}")
-    st.caption(f"Wins: {win_pts:.1f} | Losses: {loss_pts:.1f}")
+    # Sort for calculations (Ascending for running record)
+    team_games = team_games.sort_values('GAME_DATE', ascending=True)
     
-    # ... Add more metrics (Steals, Blocks, etc.) similarly ...
+    # Calculate Running Record based on CURRENT filter
+    team_games['Wins_Cum'] = team_games['TEAM_VICTORY_INDICATOR'].cumsum()
+    team_games['Losses_Cum'] = (~team_games['TEAM_VICTORY_INDICATOR']).cumsum()
+    team_games['Record_Str'] = team_games.apply(
+        lambda x: f"{'W' if x['TEAM_VICTORY_INDICATOR'] else 'L'} ({int(x['Wins_Cum'])}-{int(x['Losses_Cum'])})", axis=1
+    )
 
-    # TREND LINE WITH DROPDOWN
+    # --- 2. PERCENTILE ENGINE & UTILS ---
+    team_info = df_teams[df_teams['TEAM_NAME'] == selected_team].iloc[0]
+    conf, tier = team_info['CONFERENCE'], team_info['CONFERENCE_TYPE']
+    team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
+
+    def get_ordinal(n):
+        n = int(n)
+        if 11 <= (n % 100) <= 13: return f"{n}th"
+        return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+    def get_p_color(p):
+        if p >= 80: return "rgba(40, 167, 69, 0.6)" # Green
+        if p >= 50: return "rgba(253, 126, 20, 0.6)" # Orange
+        return "rgba(220, 53, 69, 0.6)"             # Red
+
+    def draw_card(label, val, p_glob, p_conf, p_tier, conf_label):
+        st.markdown(f"""
+            <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
+                <div style="color: #bbb; font-size: 0.85rem;">{label}</div>
+                <div style="font-size: 1.6rem; font-weight: bold; margin: 5px 0;">{val}</div>
+                <div style="background-color: {get_p_color(p_glob)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">NCAA: {get_ordinal(p_glob)}</div>
+                <div style="background-color: {get_p_color(p_conf)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">{conf_label}: {get_ordinal(p_conf)}</div>
+                <div style="background-color: {get_p_color(p_tier)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">Tier: {get_ordinal(p_tier)}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    stat_cols = ['TEAM_POINTS', 'TEAM_2PT_FG_PERCENT', 'TEAM_3PT_FG_PERCENT', 'TEAM_FT_PERCENT', 'TEAM_EFFECTIVE_FG_PERCENT',
+                 'OPPONENT_POINTS', 'OPPONENT_2PT_FG_PERCENT', 'OPPONENT_3PT_FG_PERCENT', 'OPPONENT_FT_PERCENT', 'OPPONENT_EFFECTIVE_FG_PERCENT']
+    
+    all_teams_avg = df_games.groupby(['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE'])[stat_cols].mean().reset_index()
+
+    def get_pct(col, val, group_df=all_teams_avg):
+        if group_df.empty: return 0
+        dist = group_df[col]
+        return (dist > val).mean() * 100 if "OPPONENT" in col else (dist < val).mean() * 100
+
+    # --- 3. OFFENSIVE & DEFENSIVE PROFILES ---
+    st.markdown(f"### Performance Profile {filter_status}", unsafe_allow_html=True)
+    
+    # Offensive Section
+    st.subheader("🏀 Offensive Profile")
+    off_stats = [("Points", "TEAM_POINTS", ".1f"), ("2PT %", "TEAM_2PT_FG_PERCENT", ".1%"),
+                 ("3PT %", "TEAM_3PT_FG_PERCENT", ".1%"), ("FT %", "TEAM_FT_PERCENT", ".1%"),
+                 ("eFG %", "TEAM_EFFECTIVE_FG_PERCENT", ".1%")]
+    c_off = st.columns(5)
+    for i, (lab, col, fmt) in enumerate(off_stats):
+        val = team_games[col].mean()
+        p_g = get_pct(col, val)
+        p_c = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE'] == conf])
+        p_t = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE_TYPE'] == tier])
+        with c_off[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
+
+    # Defensive Section
+    st.write("")
+    st.subheader("🛡️ Defensive Profile")
+    def_stats = [("Pts Allowed", "OPPONENT_POINTS", ".1f"), ("Opp 2PT %", "OPPONENT_2PT_FG_PERCENT", ".1%"),
+                 ("Opp 3PT %", "OPPONENT_3PT_FG_PERCENT", ".1%"), ("Opp FT %", "OPPONENT_FT_PERCENT", ".1%"),
+                 ("Opp eFG %", "OPPONENT_EFFECTIVE_FG_PERCENT", ".1%")]
+    c_def = st.columns(5)
+    for i, (lab, col, fmt) in enumerate(def_stats):
+        val = team_games[col].mean()
+        p_g = get_pct(col, val)
+        p_c = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE'] == conf])
+        p_t = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE_TYPE'] == tier])
+        with c_def[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
+
+    # --- 4. TRENDS ---
     st.divider()
-    trend_stat = st.selectbox("Select Trend Statistic", 
-                               ['TEAM_POINTS', 'TEAM_TURNOVERS', 'TEAM_EFFECTIVE_FG_PERCENT'])
+    st.markdown(f"### 📈 Trends: {team_blue} vs Opponents{filter_status}", unsafe_allow_html=True)
     
-    fig_trend = px.line(team_games, x='GAME_DATE', y=[trend_stat, f'{trend_stat}'],
-                        title=f"{trend_stat} Trend vs Opponents",
-                        labels={'value': 'Stat Value', 'variable': 'Team'},
-                        template="plotly_dark")
-    st.plotly_chart(fig_trend, use_container_width=True)
+    suffix = st.selectbox("Select Statistic", ['POINTS', 'TURNOVERS', 'STEALS', 'BLOCKS', 'REBOUNDS_OFF', 'REBOUNDS_DEF'])
+    t_c, o_c = f"TEAM_{suffix}", f"OPPONENT_{suffix}"
+    
+    plot_df = team_games.copy()
+    for col in [t_c, o_c]:
+        plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce').fillna(0)
+
+    metric_label = suffix.replace('_', ' ').title()
+
+    import plotly.graph_objects as go
+    import numpy as np
+    fig = go.Figure()
+
+    # Team Trace
+    fig.add_trace(go.Scatter(
+        x=plot_df['GAME_DATE'], y=plot_df[t_c],
+        mode='lines+markers', name=selected_team,
+        line=dict(color="#3B12F5", width=3),
+        customdata=np.stack((plot_df['OPPONENT_TEAM_NAME'], plot_df[o_c]), axis=-1),
+        hovertemplate=f"<b>%{{x}} - %{{customdata[0]}}</b><br>{metric_label}: %{{y}}<br>Opponent {metric_label}: %{{customdata[1]}}<extra></extra>"
+    ))
+
+    # Opponent Trace
+    fig.add_trace(go.Scatter(
+        x=plot_df['GAME_DATE'], y=plot_df[o_c],
+        mode='lines+markers', name="Opponent",
+        line=dict(color="#FF4B4B", width=3), hoverinfo='skip' 
+    ))
+
+    # Safe Trendlines
+    if len(plot_df) > 1:
+        for col, color, lab in [(t_c, "#3B12F5", selected_team), (o_c, "#FF4B4B", "Opponent")]:
+            y_vals = plot_df[col].values
+            x_vals = np.arange(len(y_vals))
+            try:
+                z = np.polyfit(x_vals, y_vals, 1)
+                p = np.poly1d(z)
+                fig.add_trace(go.Scatter(x=plot_df['GAME_DATE'], y=p(x_vals), mode='lines',
+                                         line=dict(dash='dot', color=color, width=1.5), showlegend=False, hoverinfo='skip'))
+            except: continue
+
+    fig.update_layout(template="plotly_dark", hovermode="x", xaxis_title="Game Date", yaxis_title=metric_label,
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- 5. GAME LOG ---
+    st.divider()
+    st.subheader(f"📅 Game Log{filter_status}")
+    log_final = team_games.sort_values('GAME_DATE', ascending=False)[['GAME_DATE', 'OPPONENT_TEAM_NAME', 'Record_Str', 'TEAM_POINTS', 'OPPONENT_POINTS']]
+    log_final['GAME_DATE'] = log_final['GAME_DATE'].dt.date
+    log_final.columns = ['Date', 'Opponent', 'Result', 'Score', 'Opp Score']
+    
+    def style_row(row):
+        color = 'background-color: rgba(0,255,0,0.1)' if 'W' in str(row.Result) else 'background-color: rgba(255,0,0,0.1)'
+        return [color]*len(row)
+    
+    st.dataframe(log_final.style.apply(style_row, axis=1), use_container_width=True, hide_index=True)
 
 # * ATO EFFICIENCY *
 elif selection == "⏱️ After Timeout Efficiency":
-    st.title("⏱️ After Timeout (ATO) Efficiency Comparisons")
+    # Use the 'selected_team' defined globally in the sidebar
+    team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
+    st.markdown(f"## ⏱️ After Timeout (ATO) Analysis: {team_blue}", unsafe_allow_html=True)
 
+    # 1. DATA PREP
     df_ato_ui = df_ato.copy().rename(columns={
         'TEAM_NAME': 'Team',
         'CONFERENCE': 'Conference',
@@ -109,38 +243,39 @@ elif selection == "⏱️ After Timeout Efficiency":
     })
     
     for col in ['PPP', 'Plays Run', 'Total Points']:
-        df_ato_ui[col] = df_ato_ui[col].astype(float).round(2)
+        df_ato_ui[col] = pd.to_numeric(df_ato_ui[col], errors='coerce').fillna(0).round(2)
 
-    team_list = sorted(df_ato_ui['Team'].unique())
+    # Get metadata for the globally selected team
     try:
-        default_ix = team_list.index("Duke") 
-    except ValueError:
-        default_ix = 0
-    selected_team = st.selectbox("Select Primary Team", team_list, index=default_ix, key="ato_main_team")
-    
-    team_info = df_ato_ui[df_ato_ui['Team'] == selected_team].iloc[0]
-    target_conf = team_info['Conference']
-    target_tier = team_info['Tier']    
+        team_info = df_ato_ui[df_ato_ui['Team'] == selected_team].iloc[0]
+        target_conf = team_info['Conference']
+        target_tier = team_info['Tier']
+    except IndexError:
+        st.error(f"Data for {selected_team} not found in the ATO dataset.")
+        st.stop()
+        
     conf_df = df_ato_ui[df_ato_ui['Conference'] == target_conf].copy()
     tier_df = df_ato_ui[df_ato_ui['Tier'] == target_tier].copy()
 
-    # * RANKED PPP EFFICIENCY - bar *
+    # --- 2. RANKED PPP EFFICIENCY (BAR CHART) ---
     st.subheader(f"Ranked Total ATO Efficiency: {target_conf}")
     total_rank_df = conf_df.groupby('Team').agg({'Total Points': 'sum', 'Plays Run': 'sum'}).reset_index()
     total_rank_df['PPP'] = (total_rank_df['Total Points'] / total_rank_df['Plays Run']).round(2)
     total_rank_df = total_rank_df.sort_values('PPP', ascending=False)
+    
+    # Highlight the selected team in Blue
     total_rank_df['Color'] = total_rank_df['Team'].apply(lambda x: "#3B12F5" if x == selected_team else '#31333F')
 
     fig_rank = px.bar(
         total_rank_df, x='PPP', y='Team', orientation='h',
         text_auto='.2f', color='Color', color_discrete_map="identity",
-        template="plotly_dark"
+        template="plotly_dark", height=max(400, len(total_rank_df)*25)
     )
     fig_rank.update_traces(hovertemplate="Team: %{y}<br>PPP: %{x}<extra></extra>")
     fig_rank.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
     st.plotly_chart(fig_rank, use_container_width=True)
 
-    # * PPP BY TEAM - scatterplot *
+    # --- 3. EFFICIENCY VS. VOLUME (SCATTERPLOT FIX) ---
     st.divider()
     st.subheader("Efficiency vs. Volume Analysis")
     
@@ -148,56 +283,72 @@ elif selection == "⏱️ After Timeout Efficiency":
 
     if view_option == "Total PPP":
         plot_df = total_rank_df.rename(columns={'PPP': 'y', 'Plays Run': 'x'})
+        # Benchmarks
         g_avg, t_avg, c_avg = df_ato_ui['PPP'].mean(), tier_df['PPP'].mean(), conf_df['PPP'].mean()
     else:
+        # Filter for specific shot type
         plot_df = conf_df[conf_df['Shot Type'] == view_option].copy().rename(columns={'PPP': 'y', 'Plays Run': 'x'})
+        # Benchmarks for specific shot type
         g_avg = df_ato_ui[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
-        t_avg = tier_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
-        c_avg = conf_df[df_ato_ui['Shot Type'] == view_option]['PPP'].mean()
+        t_avg = tier_df[tier_df['Shot Type'] == view_option]['PPP'].mean()
+        c_avg = conf_df[conf_df['Shot Type'] == view_option]['PPP'].mean()
 
+    # Create Scatter
     fig_scatter = px.scatter(
-        plot_df, x='x', y='y', color='Team', size='x',
+        plot_df, x='x', y='y', 
+        color='Team', # This automatically maps team names to the trace
+        size='x',
         text='Team',
         labels={'x': 'Plays Run', 'y': 'PPP'},
-        title=f"{view_option} Benchmarking", template="plotly_dark"
+        title=f"{view_option} Benchmarking: {target_conf}", 
+        template="plotly_dark"
     )
 
+    # Use %{fullData.name} or simply remove customdata to let Plotly use the 'color' label
     fig_scatter.update_traces(
         textposition='top center',
-        hovertemplate="Team: %{customdata[0]}<br>Plays: %{x}<br>PPP: %{y}<extra></extra>",
-        customdata=plot_df[['Team']]
+        hovertemplate="<b>%{text}</b><br>Plays: %{x}<br>PPP: %{y:.2f}<extra></extra>"
     )
     
-    colors = {"Global": "white", "Tier": "#00CC96", "Conf": "#3B12F5"}
-    avgs = [("Global", g_avg, "dot"), (f"{target_tier}", t_avg, "dash"), ("Conference", c_avg, "solid")]
+    # Add Horizontal benchmark lines
+    line_configs = [
+        ("NCAA Avg", g_avg, "white", "dot"), 
+        (f"{target_tier} Avg", t_avg, "#00CC96", "dash"), 
+        (f"{target_conf} Avg", c_avg, "#3B12F5", "solid")
+    ]
     
-    for label, val, style in avgs:
-        fig_scatter.add_hline(y=val, line_dash=style, line_color=colors.get(label.split()[0], "white"), 
+    for label, val, color, style in line_configs:
+        fig_scatter.add_hline(y=val, line_dash=style, line_color=color, 
                               annotation_text=f" {label}: {val:.2f}", annotation_position="top right")
 
+    fig_scatter.update_layout(showlegend=False) # Hide legend since names are on plot
     st.plotly_chart(fig_scatter, use_container_width=True)
 
-    # * PPP COMPOSITION - bar *
+    # --- 4. STRATEGY DNA (STACKED BAR) ---
     st.divider()
     st.subheader("ATO Shot Selection Profile")
-    st.caption("Sorted by Total Team Efficiency (Highest PPP at the top)")
+    st.caption("How teams choose to attack after a timeout (Percentage of Total ATO Plays)")
     
-    conf_df['Total Plays'] = conf_df.groupby('Team')['Plays Run'].transform('sum')
-    conf_df['Pct'] = ((conf_df['Plays Run'] / conf_df['Total Plays']) * 100).round(1)
+    # Calculate DNA Percentages
+    dna_df = conf_df.copy()
+    dna_df['Total Plays'] = dna_df.groupby('Team')['Plays Run'].transform('sum')
+    dna_df['Pct'] = ((dna_df['Plays Run'] / dna_df['Total Plays']) * 100).round(1)
 
-    dna_sort_order = total_rank_df['Team'].tolist()[::-1]
+    # Order by the ranking calculated in Step 2
+    dna_sort_order = total_rank_df['Team'].tolist()#[::-1]
 
     fig_stack = px.bar(
-        conf_df, y="Team", x="Pct", color="Shot Type",
+        dna_df, y="Team", x="Pct", color="Shot Type",
         text="Pct", orientation='h',
         title=f"Strategy DNA: {target_conf}",
         labels={"Pct": "Selection %"},
         template="plotly_dark",
-        category_orders={"Team": dna_sort_order}
+        category_orders={"Team": dna_sort_order},
+        color_discrete_sequence=px.colors.qualitative.Pastel
     )
     
     fig_stack.update_traces(texttemplate='%{text}%', 
-                            hovertemplate="Team: %{y}<br>Percentage: %{x}<extra></extra>",
+                            hovertemplate="Team: %{y}<br>Percentage: %{x}%<extra></extra>",
                             textposition='inside')
-    fig_stack.update_layout(xaxis_ticksuffix="%", yaxis={'categoryorder':'array', 'categoryarray': dna_sort_order})
+    fig_stack.update_layout(xaxis_ticksuffix="%", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_stack, use_container_width=True)
