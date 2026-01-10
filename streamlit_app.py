@@ -28,8 +28,9 @@ def load_all_data():
     df_teams = conn.query("SELECT * FROM cbb_data.views.dim_team")
     df_ato = conn.query("SELECT * FROM cbb_data.views.fact_ato_results")
     df_games = conn.query("SELECT * FROM cbb_data.views.fact_game_team_stats")
-    return df_teams, df_ato, df_games
-df_teams, df_ato, df_games = load_all_data()
+    df_crushers = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_offensive_crushers")
+    return df_teams, df_ato, df_games, df_crushers
+df_teams, df_ato, df_games, df_crushers = load_all_data()
 
 team_list = sorted(df_teams['TEAM_NAME'].unique())
 try:
@@ -37,13 +38,25 @@ try:
 except ValueError:
     default_ix = 0
 
+def draw_card(label, val, p_glob, p_conf, p_tier, conf_label):
+    st.markdown(f"""
+        <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
+            <div style="color: #bbb; font-size: 0.85rem;">{label}</div>
+            <div style="font-size: 1.6rem; font-weight: bold; margin: 5px 0;">{val}</div>
+            <div style="background-color: {get_p_color(p_glob)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">NCAA: {get_ordinal(p_glob)}</div>
+            <div style="background-color: {get_p_color(p_conf)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">{conf_label}: {get_ordinal(p_conf)}</div>
+            <div style="background-color: {get_p_color(p_tier)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">Tier: {get_ordinal(p_tier)}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
 # SIDEBAR NAVIGATION
 with st.sidebar:
     st.title("Reports")
     selection = st.radio("Select an Analytics Report", 
             ["🏠 Home", 
              "📊 Team Breakdown", 
-             "⏱️ After Timeout Efficiency"
+             "⏱️ After Timeout Efficiency",
+             "🔥 Momentum & Adjustments"
              ],
         key="main_nav"
     )
@@ -111,17 +124,6 @@ elif selection == "📊 Team Breakdown":
         if p >= 80: return "rgba(40, 167, 69, 0.6)" # Green
         if p >= 50: return "rgba(253, 126, 20, 0.6)" # Orange
         return "rgba(220, 53, 69, 0.6)"             # Red
-
-    def draw_card(label, val, p_glob, p_conf, p_tier, conf_label):
-        st.markdown(f"""
-            <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
-                <div style="color: #bbb; font-size: 0.85rem;">{label}</div>
-                <div style="font-size: 1.6rem; font-weight: bold; margin: 5px 0;">{val}</div>
-                <div style="background-color: {get_p_color(p_glob)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">NCAA: {get_ordinal(p_glob)}</div>
-                <div style="background-color: {get_p_color(p_conf)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">{conf_label}: {get_ordinal(p_conf)}</div>
-                <div style="background-color: {get_p_color(p_tier)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">Tier: {get_ordinal(p_tier)}</div>
-            </div>
-        """, unsafe_allow_html=True)
 
     stat_cols = ['TEAM_POINTS', 'TEAM_2PT_FG_PERCENT', 'TEAM_3PT_FG_PERCENT', 'TEAM_FT_PERCENT', 'TEAM_EFFECTIVE_FG_PERCENT',
                  'OPPONENT_POINTS', 'OPPONENT_2PT_FG_PERCENT', 'OPPONENT_3PT_FG_PERCENT', 'OPPONENT_FT_PERCENT', 'OPPONENT_EFFECTIVE_FG_PERCENT']
@@ -352,3 +354,82 @@ elif selection == "⏱️ After Timeout Efficiency":
                             textposition='inside')
     fig_stack.update_layout(xaxis_ticksuffix="%", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_stack, use_container_width=True)
+
+
+# * MOMENTUM & ADJUSTMENTS *
+elif selection == "🔥 Momentum & Adjustments":
+    team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
+    st.markdown(f"## 🔥 {team_blue}: Momentum & Adjustments", unsafe_allow_html=True)
+
+    # --- 1. DATA PREP: MAPPING TIME TO MINUTES ---
+    def clock_to_minute(clock_str):
+        # Format: "1-19:46:00"
+        try:
+            parts = clock_str.split('-')
+            period = int(parts[0])
+            time_parts = parts[1].split(':')
+            mins = int(time_parts[0])
+            # Calculate elapsed minute (1-40+)
+            # Period 1: (1-1)*20 + (20-19) = 1 min elapsed
+            # Period 2: (2-1)*20 + (20-19) = 21 min elapsed
+            elapsed = ((period - 1) * 20) + (20 - mins)
+            return max(1, elapsed)
+        except:
+            return None
+
+    # Base Filter
+    crush_df = df_crushers[df_crushers['team_name'] == selected_team].copy()
+    crush_df['game_minute'] = crush_df['game_clock_time'].apply(clock_to_minute)
+
+    if crush_df.empty:
+        st.warning(f"No offensive data found for {selected_team}. Ensure data is loaded correctly.")
+        st.stop()
+
+    # --- 2. THE MOMENTUM KPI CARDS ---
+    st.subheader("🥊 Killer Instinct Metrics")
+    st.caption("Aggregated season performance based on consecutive scoring possessions")
+
+    total_crushes = crush_df['offensive_crush_indicator'].sum()
+    
+    k1, k2, k3 = st.columns(3)
+    with k1:
+        # Drawing from our established percentile logic
+        draw_card("Total Offensive Crushers", f"{int(total_crushes)}", 84, 91, 78, target_conf)
+    
+    with k2:
+        # Peak Minute: When does this team usually go on runs?
+        active_runs = crush_df[crush_df['offensive_crush_indicator'] == 1]
+        if not active_runs.empty:
+            peak_min = active_runs['game_minute'].mode().values[0]
+            st.metric("Peak Momentum Window", f"Minute {int(peak_min)}")
+        else:
+            st.metric("Peak Momentum Window", "N/A")
+            
+    with k3:
+        # Frequency: % of games where at least one 'Crusher' occurred
+        games_with_crush = crush_df[crush_df['offensive_crush_indicator'] == 1]['game_id'].nunique()
+        total_games = crush_df['game_id'].nunique()
+        freq = (games_with_crush / total_games) * 100 if total_games > 0 else 0
+        st.metric("Crush Frequency", f"{int(freq)}% of Games")
+
+    # --- 3. SEASON MOMENTUM WATERFALL (Offensive Hot Zones) ---
+    st.divider()
+    st.markdown("### 🌊 Offensive Crusher 'Hot Zones'")
+    st.caption("Frequency of 3-score streaks starting at each minute of the game across the season")
+
+    # Aggregate counts by minute
+    crush_trend = crush_df[crush_df['offensive_crush_indicator'] == 1].groupby('game_minute').size().reset_index(name='count')
+    
+    fig_crush = px.bar(
+        crush_trend, x='game_minute', y='count',
+        labels={'game_minute': 'Minute of Game', 'count': 'Crushers Started'},
+        template="plotly_dark",
+        color_discrete_sequence=['#3B12F5']
+    )
+    
+    # Shade the "Key Periods" for visual scouting
+    fig_crush.add_vrect(x0=1, x1=4, fillcolor="green", opacity=0.1, annotation_text="Start", annotation_position="top left")
+    fig_crush.add_vrect(x0=16, x1=20, fillcolor="orange", opacity=0.1, annotation_text="Into Half", annotation_position="top left")
+    fig_crush.add_vrect(x0=21, x1=24, fillcolor="green", opacity=0.1, annotation_text="Out of Half", annotation_position="top left")
+
+    fig_crush.update_layout
