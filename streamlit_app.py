@@ -38,6 +38,7 @@ try:
 except ValueError:
     default_ix = 0
 
+# COSMETIC FUNCTIONS 
 def draw_card(label, val, p_glob, p_conf, p_tier, conf_label):
     st.markdown(f"""
         <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
@@ -48,6 +49,16 @@ def draw_card(label, val, p_glob, p_conf, p_tier, conf_label):
             <div style="background-color: {get_p_color(p_tier)}; border-radius: 3px; font-size: 0.7rem; margin: 2px 0; padding: 2px;">Tier: {get_ordinal(p_tier)}</div>
         </div>
     """, unsafe_allow_html=True)
+
+def get_ordinal(n):
+    n = int(n)
+    if 11 <= (n % 100) <= 13: return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+def get_p_color(p):
+    if p >= 80: return "rgba(40, 167, 69, 0.6)" # Green
+    if p >= 50: return "rgba(253, 126, 20, 0.6)" # Orange
+    return "rgba(220, 53, 69, 0.6)"             # Red
 
 # SIDEBAR NAVIGATION
 with st.sidebar:
@@ -114,16 +125,6 @@ elif selection == "📊 Team Breakdown":
     team_info = df_teams[df_teams['TEAM_NAME'] == selected_team].iloc[0]
     conf, tier = team_info['CONFERENCE'], team_info['CONFERENCE_TYPE']
     team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
-
-    def get_ordinal(n):
-        n = int(n)
-        if 11 <= (n % 100) <= 13: return f"{n}th"
-        return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
-
-    def get_p_color(p):
-        if p >= 80: return "rgba(40, 167, 69, 0.6)" # Green
-        if p >= 50: return "rgba(253, 126, 20, 0.6)" # Orange
-        return "rgba(220, 53, 69, 0.6)"             # Red
 
     stat_cols = ['TEAM_POINTS', 'TEAM_2PT_FG_PERCENT', 'TEAM_3PT_FG_PERCENT', 'TEAM_FT_PERCENT', 'TEAM_EFFECTIVE_FG_PERCENT',
                  'OPPONENT_POINTS', 'OPPONENT_2PT_FG_PERCENT', 'OPPONENT_3PT_FG_PERCENT', 'OPPONENT_FT_PERCENT', 'OPPONENT_EFFECTIVE_FG_PERCENT']
@@ -355,81 +356,256 @@ elif selection == "⏱️ After Timeout Efficiency":
     fig_stack.update_layout(xaxis_ticksuffix="%", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_stack, use_container_width=True)
 
-
 # * MOMENTUM & ADJUSTMENTS *
 elif selection == "🔥 Momentum & Adjustments":
+    team_info = df_teams[df_teams['TEAM_NAME'] == selected_team].iloc[0]
+    conf, tier = team_info['CONFERENCE'], team_info['CONFERENCE_TYPE']
     team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
     st.markdown(f"## 🔥 {team_blue}: Momentum & Adjustments", unsafe_allow_html=True)
 
-    # --- 1. DATA PREP: MAPPING TIME TO MINUTES ---
+    # --- 1. DATA PREP & LEAGUE-WIDE AGGREGATION ---
     def clock_to_minute(clock_str):
-        # Format: "1-19:46:00"
         try:
             parts = clock_str.split('-')
-            period = int(parts[0])
-            time_parts = parts[1].split(':')
-            mins = int(time_parts[0])
-            # Calculate elapsed minute (1-40+)
-            # Period 1: (1-1)*20 + (20-19) = 1 min elapsed
-            # Period 2: (2-1)*20 + (20-19) = 21 min elapsed
-            elapsed = ((period - 1) * 20) + (20 - mins)
-            return max(1, elapsed)
-        except:
-            return None
+            period, mins = int(parts[0]), int(parts[1].split(':')[0])
+            return max(1, ((period - 1) * 20) + (20 - mins))
+        except: return None
 
-    # Base Filter
-    crush_df = df_crushers[df_crushers['team_name'] == selected_team].copy()
-    crush_df['game_minute'] = crush_df['game_clock_time'].apply(clock_to_minute)
+    league_crush_summary = df_crushers.groupby(['TEAM_NAME']).agg(
+        total_crushes=('OFFENSIVE_CRUSH_INDICATOR', 'sum')
+    ).reset_index()
 
-    if crush_df.empty:
-        st.warning(f"No offensive data found for {selected_team}. Ensure data is loaded correctly.")
-        st.stop()
-
-    # --- 2. THE MOMENTUM KPI CARDS ---
-    st.subheader("🥊 Killer Instinct Metrics")
-    st.caption("Aggregated season performance based on consecutive scoring possessions")
-
-    total_crushes = crush_df['offensive_crush_indicator'].sum()
+    crush_df = df_crushers[df_crushers['TEAM_NAME'] == selected_team].copy()
+    crush_df['GAME_MINUTE'] = crush_df['GAME_CLOCK_TIME'].apply(clock_to_minute)
     
+    val_k1 = crush_df['OFFENSIVE_CRUSH_INDICATOR'].sum()
+    p_glob = (league_crush_summary['total_crushes'] < val_k1).mean() * 100
+    p_conf = (league_crush_summary[league_crush_summary['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE'] == conf]['TEAM_NAME'])]['total_crushes'] < val_k1).mean() * 100
+    p_tier = (league_crush_summary[league_crush_summary['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE_TYPE'] == tier]['TEAM_NAME'])]['total_crushes'] < val_k1).mean() * 100
+
+    # --- 2. MOMENTUM KPI CARDS ---
+    st.subheader("🥊 Killer Instinct Metrics")
     k1, k2, k3 = st.columns(3)
+
     with k1:
-        # Drawing from our established percentile logic
-        draw_card("Total Offensive Crushers", f"{int(total_crushes)}", 84, 91, 78, target_conf)
+        draw_card("Total Offensive Crushers", f"{int(val_k1)}", p_glob, p_conf, p_tier, conf)
     
     with k2:
-        # Peak Minute: When does this team usually go on runs?
-        active_runs = crush_df[crush_df['offensive_crush_indicator'] == 1]
-        if not active_runs.empty:
-            peak_min = active_runs['game_minute'].mode().values[0]
-            st.metric("Peak Momentum Window", f"Minute {int(peak_min)}")
-        else:
-            st.metric("Peak Momentum Window", "N/A")
-            
+        active_runs = crush_df[crush_df['OFFENSIVE_CRUSH_INDICATOR'] == 1]
+        peak_min = int(active_runs['GAME_MINUTE'].mode().values[0]) if not active_runs.empty else "N/A"
+        st.markdown(f"""
+            <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
+                <div style="color: #bbb; font-size: 0.85rem;">Peak Momentum Window</div>
+                <div style="font-size: 1.6rem; font-weight: bold; margin: 15px 0;">Minute {peak_min}</div>
+                <div style="color: #888; font-size: 0.75rem;">Most frequent start time for 3-possession scoring streaks.</div>
+            </div>
+        """, unsafe_allow_html=True)
+
     with k3:
-        # Frequency: % of games where at least one 'Crusher' occurred
-        games_with_crush = crush_df[crush_df['offensive_crush_indicator'] == 1]['game_id'].nunique()
-        total_games = crush_df['game_id'].nunique()
-        freq = (games_with_crush / total_games) * 100 if total_games > 0 else 0
-        st.metric("Crush Frequency", f"{int(freq)}% of Games")
+        # 1. Join & Binning (Same as previous logic)
+        team_game_summary = crush_df.groupby('GAME_ID')['OFFENSIVE_CRUSH_INDICATOR'].sum().reset_index()
+        team_game_summary.columns = ['GAME_ID', 'Crusher_Count']
+        win_logic = df_games[df_games['TEAM_NAME'] == selected_team][['GAME_ID', 'TEAM_VICTORY_INDICATOR']]
+        merged_stats = team_game_summary.merge(win_logic, on='GAME_ID')
 
-    # --- 3. SEASON MOMENTUM WATERFALL (Offensive Hot Zones) ---
+        def get_bin(count):
+            if count == 0: return "0"
+            if 1 <= count <= 3: return "1-3"
+            if 4 <= count <= 5: return "4-5"
+            return "6+"
+
+        merged_stats['Bin'] = merged_stats['Crusher_Count'].apply(get_bin)
+        
+        bin_order = ["0", "1-3", "4-5", "6+"]
+        bin_analysis = []
+        
+        for b in bin_order:
+            subset = merged_stats[merged_stats['Bin'] == b]
+            total = len(subset)
+            wins = subset['TEAM_VICTORY_INDICATOR'].sum()
+            win_pct = (wins / total * 100) if total > 0 else 0
+            
+            # 2. Dynamic Color Logic
+            if win_pct >= 75: color = "#28a745"   # Green
+            elif win_pct >= 51: color = "#ffc107" # Yellow
+            else: color = "#dc3545"               # Red
+            
+            bin_analysis.append({
+                "Bin": b, 
+                "WinPct": win_pct, 
+                "Record": f"{int(wins)}-{int(total-wins)}",
+                "DisplayPct": f"{win_pct:.0f}%",
+                "Color": color
+            })
+        
+        bin_df = pd.DataFrame(bin_analysis)
+
+        # 3. Custom Hover Template & Figure
+        fig_k3 = px.bar(
+            bin_df, x="Bin", y="WinPct",
+            text="Record",
+            color="Color",
+            color_discrete_map="identity",
+            template="plotly_dark",
+            height=145 # Adjusted to fit inside container
+        )
+        
+        fig_k3.update_traces(
+            textposition='outside',
+            textfont_size=10,
+            hovertemplate="<b>Crushers Achieved: %{x}</b><br>Record: %{text} (%{y:.0f}%)<extra></extra>"
+        )
+
+        fig_k3.update_layout(
+            margin=dict(l=5, r=5, t=20, b=5), # Added tiny margins to prevent edge-touching
+            xaxis=dict(title=None, tickfont_size=10),
+            yaxis=dict(visible=False, range=[0, 125]), 
+            showlegend=False,
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)"
+        )
+
+        # 2. Use a Streamlit container with custom CSS for the border
+        # This keeps the plotly chart "inside" the native streamlit flow
+        st.markdown("""
+            <style>
+            [data-testid="stVerticalBlock"] > div:nth-child(3) [data-testid="stVerticalBlock"] {
+                border: 1px solid #444;
+                border-radius: 10px;
+                background-color: #1e1e1e;
+                padding: 10px;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        # Simple column container for the content
+        with st.container():
+            st.markdown("<div style='color: #bbb; font-size: 0.85rem; text-align: center;'>Win Prob by Crusher Volume</div>", unsafe_allow_html=True)
+            st.plotly_chart(fig_k3, use_container_width=True, config={'displayModeBar': False})
+
+    # --- 3. HOT ZONES (Team Bars + NCAA Benchmark Line) ---
     st.divider()
-    st.markdown("### 🌊 Offensive Crusher 'Hot Zones'")
-    st.caption("Frequency of 3-score streaks starting at each minute of the game across the season")
+    st.markdown("### 🌊 Offensive Crusher 'Hot Zones' vs. National Average")
+    st.caption("How this team's momentum compares to the typical NCAA scoring flow")
 
-    # Aggregate counts by minute
-    crush_trend = crush_df[crush_df['offensive_crush_indicator'] == 1].groupby('game_minute').size().reset_index(name='count')
+    # 1. Team Data prep
+    crush_trend = active_runs.groupby('GAME_MINUTE').size().reset_index(name='Team_Count')
     
-    fig_crush = px.bar(
-        crush_trend, x='game_minute', y='count',
-        labels={'game_minute': 'Minute of Game', 'count': 'Crushers Started'},
+    # 2. NCAA Average prep (Normalized per team)
+    nat_active_runs = df_crushers[df_crushers['OFFENSIVE_CRUSH_INDICATOR'] == 1].copy()
+    nat_active_runs['GAME_MINUTE'] = nat_active_runs['GAME_CLOCK_TIME'].apply(clock_to_minute)
+    num_teams = df_crushers['TEAM_NAME'].nunique()
+    nat_trend = nat_active_runs.groupby('GAME_MINUTE').size().reset_index(name='Avg_Count')
+    nat_trend['Avg_Count'] = nat_trend['Avg_Count'] / num_teams
+
+    import plotly.graph_objects as go
+
+    fig_waterfall = go.Figure()
+
+    # TEAM BARS: Strong, Solid Blue
+    fig_waterfall.add_trace(go.Bar(
+        x=crush_trend['GAME_MINUTE'], 
+        y=crush_trend['Team_Count'], 
+        name=selected_team, 
+        marker_color="#3B12F5",
+        opacity=0.9,
+        hovertemplate=f"<b>{selected_team}</b><br>Minute %{{x}}: %{{y}} Crushers<extra></extra>"
+    ))
+
+    # NCAA AVERAGE: A "Ghost Line" with markers
+    fig_waterfall.add_trace(go.Scatter(
+        x=nat_trend['GAME_MINUTE'], 
+        y=nat_trend['Avg_Count'], 
+        name="NCAA Avg",
+        mode='lines+markers',
+        line=dict(color="rgba(255, 255, 255, 0.5)", width=2, shape='spline'),
+        marker=dict(size=4, color="white"),
+        fill='tozeroy', # Shading under the line for better visibility
+        fillcolor='rgba(255, 255, 255, 0.05)',
+        hovertemplate="<b>NCAA Avg</b><br>Minute %{x}: %{y:.2f}<extra></extra>"
+    ))
+
+    fig_waterfall.update_layout(
         template="plotly_dark",
-        color_discrete_sequence=['#3B12F5']
+        xaxis=dict(range=[0, 42], title="Minute of Game", tickmode='linear', dtick=5),
+        yaxis=dict(title="Occurrences / Avg"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=0, r=0, t=30, b=0)
+    )
+
+    # Re-apply your V-Rects
+    fig_waterfall.add_vrect(x0=1, x1=4, fillcolor="green", opacity=0.07, annotation_text="Start")
+    fig_waterfall.add_vrect(x0=17, x1=20, fillcolor="green", opacity=0.07, annotation_text="Into Half")
+    fig_waterfall.add_vrect(x0=21, x1=24, fillcolor="green", opacity=0.07, annotation_text="Out of Half")
+    fig_waterfall.add_vrect(x0=37, x1=40, fillcolor="green", opacity=0.07, annotation_text="End")
+
+    st.plotly_chart(fig_waterfall, use_container_width=True)
+
+    # --- 4. THE HALFTIME PIVOT (League Scatterplot) ---
+    st.divider()
+    st.markdown("### 🔄 Halftime Pivot: Adjustment Scatter")
+    
+    # Toggle for Scope
+    scope = st.radio("View Scope:", ["All NCAA", f"{conf} Conference Only"], horizontal=True, label_visibility="collapsed")
+
+    # 1. Prep Pivot Data (Join with df_teams to get Conference info)
+    df_pivot_all = df_crushers.copy()
+    df_pivot_all['GAME_MINUTE'] = df_pivot_all['GAME_CLOCK_TIME'].apply(clock_to_minute)
+    df_pivot_all = df_pivot_all[df_pivot_all['GAME_MINUTE'].between(17, 24)]
+    df_pivot_all['window'] = np.where(df_pivot_all['GAME_MINUTE'] <= 20, 'End_1H', 'Start_2H')
+    
+    # Aggregate Scoring %
+    league_pivot = df_pivot_all.groupby(['TEAM_NAME', 'window'])['POSSESSION_RESULT_SCORE'].mean().unstack().reset_index()
+    league_pivot.columns = ['Team', 'End_1H', 'Start_2H']
+    
+    # Merge with df_teams to get Conference for filtering/coloring
+    league_pivot = league_pivot.merge(df_teams[['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE']], left_on='Team', right_on='TEAM_NAME').dropna()
+
+    # 2. Filter based on Toggle
+    if "Conference Only" in scope:
+        plot_df = league_pivot[league_pivot['CONFERENCE'] == conf].copy()
+        color_col = None # Simple coloring for conference view
+    else:
+        plot_df = league_pivot.copy()
+        color_col = 'CONFERENCE_TYPE'
+
+    # 3. Create the Scatter
+    fig_scatter = px.scatter(
+        plot_df, 
+        x='End_1H', 
+        y='Start_2H',
+        color=color_col,
+        hover_name='Team',
+        hover_data={'CONFERENCE': True, 'End_1H': ':.1%', 'Start_2H': ':.1%'},
+        template="plotly_dark",
+        labels={'End_1H': 'Final 4m (1H) Scoring %', 'Start_2H': 'First 4m (2H) Scoring %'},
+        opacity=0.75,
+        color_discrete_map={'Power': "#F3A30F", 'Other': "#72D3F3"} # Power teams in red, others muted
     )
     
-    # Shade the "Key Periods" for visual scouting
-    fig_crush.add_vrect(x0=1, x1=4, fillcolor="green", opacity=0.1, annotation_text="Start", annotation_position="top left")
-    fig_crush.add_vrect(x0=16, x1=20, fillcolor="orange", opacity=0.1, annotation_text="Into Half", annotation_position="top left")
-    fig_crush.add_vrect(x0=21, x1=24, fillcolor="green", opacity=0.1, annotation_text="Out of Half", annotation_position="top left")
+    # Highlight Selected Team
+    team_dot = league_pivot[league_pivot['Team'] == selected_team]
+    fig_scatter.add_trace(go.Scatter(
+        x=team_dot['End_1H'], 
+        y=team_dot['Start_2H'], 
+        mode='markers+text',
+        marker=dict(color="#3B12F5", size=18, symbol='star', line=dict(color='white', width=2)),
+        name=selected_team,
+        # text=[selected_team],
+        textposition="top center"
+    ))
 
-    fig_crush.update_layout
+    # Add Y=X line
+    max_val = max(plot_df['End_1H'].max(), plot_df['Start_2H'].max())
+    fig_scatter.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val, line=dict(color="white", dash="dash", width=1))
+
+    # Add Quadrant Annotations
+    fig_scatter.add_annotation(x=max_val, y=max_val, text="Improved After Half ↗", showarrow=False, yshift=10, font=dict(color="#28a745"))
+    fig_scatter.add_annotation(x=max_val, y=0, text="Faded After Half ↘", showarrow=False, yshift=-10, font=dict(color="#dc3545"))
+
+    fig_scatter.update_layout(
+        margin=dict(l=0, r=0, t=20, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
+    st.plotly_chart(fig_scatter, use_container_width=True)
