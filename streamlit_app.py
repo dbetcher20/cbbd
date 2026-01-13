@@ -4,6 +4,8 @@ import plotly.express as px
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 import numpy as np
+import plotly.graph_objects as go 
+
 
 # PAGE CONFIG & AUTH
 st.set_page_config(page_title="Snowflake Sports Analytics", layout="wide")
@@ -29,8 +31,9 @@ def load_all_data():
     df_ato = conn.query("SELECT * FROM cbb_data.views.fact_ato_results")
     df_games = conn.query("SELECT * FROM cbb_data.views.fact_game_team_stats")
     df_crushers = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_offensive_crushers")
-    return df_teams, df_ato, df_games, df_crushers
-df_teams, df_ato, df_games, df_crushers = load_all_data()
+    df_kills = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_defensive_kills")
+    return df_teams, df_ato, df_games, df_crushers, df_kills
+df_teams, df_ato, df_games, df_crushers, df_kills = load_all_data()
 
 team_list = sorted(df_teams['TEAM_NAME'].unique())
 try:
@@ -363,7 +366,19 @@ elif selection == "🔥 Momentum & Adjustments":
     team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
     st.markdown(f"## 🔥 {team_blue}: Momentum & Adjustments", unsafe_allow_html=True)
 
-    # --- 1. DATA PREP & LEAGUE-WIDE AGGREGATION ---
+    st.markdown("""
+        <style>
+        /* This targets the vertical block immediately following our label */
+        [data-testid="stVerticalBlock"] > div:has(div > p:contains("Win Prob by")) {
+            border: 1px solid #444 !important;
+            border-radius: 10px !important;
+            background-color: #1e1e1e !important;
+            padding: 10px !important;
+            margin-bottom: 15px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
     def clock_to_minute(clock_str):
         try:
             parts = clock_str.split('-')
@@ -371,241 +386,155 @@ elif selection == "🔥 Momentum & Adjustments":
             return max(1, ((period - 1) * 20) + (20 - mins))
         except: return None
 
-    league_crush_summary = df_crushers.groupby(['TEAM_NAME']).agg(
-        total_crushes=('OFFENSIVE_CRUSH_INDICATOR', 'sum')
-    ).reset_index()
-
-    crush_df = df_crushers[df_crushers['TEAM_NAME'] == selected_team].copy()
-    crush_df['GAME_MINUTE'] = crush_df['GAME_CLOCK_TIME'].apply(clock_to_minute)
+    # Offense
+    c_df = df_crushers[df_crushers['TEAM_NAME'] == selected_team].copy()
+    c_df['GAME_MINUTE'] = c_df['GAME_CLOCK_TIME'].apply(clock_to_minute)
+    league_c = df_crushers.groupby('TEAM_NAME')['OFFENSIVE_CRUSH_INDICATOR'].sum().reset_index()
     
-    val_k1 = crush_df['OFFENSIVE_CRUSH_INDICATOR'].sum()
-    p_glob = (league_crush_summary['total_crushes'] < val_k1).mean() * 100
-    p_conf = (league_crush_summary[league_crush_summary['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE'] == conf]['TEAM_NAME'])]['total_crushes'] < val_k1).mean() * 100
-    p_tier = (league_crush_summary[league_crush_summary['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE_TYPE'] == tier]['TEAM_NAME'])]['total_crushes'] < val_k1).mean() * 100
+    # Defense
+    k_df = df_kills[df_kills['TEAM_NAME'] == selected_team].copy()
+    k_df['GAME_MINUTE'] = k_df['GAME_CLOCK_TIME'].apply(clock_to_minute)
+    league_k = df_kills.groupby('TEAM_NAME')['DEFENSIVE_KILL_INDICATOR'].sum().reset_index()
 
-    # --- 2. MOMENTUM KPI CARDS ---
-    st.subheader("🥊 Killer Instinct Metrics")
-    k1, k2, k3 = st.columns(3)
+    # Shared Game Win Logic
+    win_logic = df_games[df_games['TEAM_NAME'] == selected_team][['GAME_ID', 'TEAM_VICTORY_INDICATOR']]
 
-    with k1:
-        draw_card("Total Offensive Crushers", f"{int(val_k1)}", p_glob, p_conf, p_tier, conf)
-    
-    with k2:
-        active_runs = crush_df[crush_df['OFFENSIVE_CRUSH_INDICATOR'] == 1]
-        peak_min = int(active_runs['GAME_MINUTE'].mode().values[0]) if not active_runs.empty else "N/A"
-        st.markdown(f"""
-            <div style="border: 1px solid #444; border-radius: 10px; padding: 12px; text-align: center; background-color: #1e1e1e; min-height: 160px;">
-                <div style="color: #bbb; font-size: 0.85rem;">Peak Momentum Window</div>
-                <div style="font-size: 1.6rem; font-weight: bold; margin: 15px 0;">Minute {peak_min}</div>
-                <div style="color: #888; font-size: 0.75rem;">Most frequent start time for 3-possession scoring streaks.</div>
-            </div>
-        """, unsafe_allow_html=True)
+    col_off, col_def = st.columns(2)
 
-    with k3:
-        # 1. Join & Binning (Same as previous logic)
-        team_game_summary = crush_df.groupby('GAME_ID')['OFFENSIVE_CRUSH_INDICATOR'].sum().reset_index()
-        team_game_summary.columns = ['GAME_ID', 'Crusher_Count']
-        win_logic = df_games[df_games['TEAM_NAME'] == selected_team][['GAME_ID', 'TEAM_VICTORY_INDICATOR']]
-        merged_stats = team_game_summary.merge(win_logic, on='GAME_ID')
-
-        def get_bin(count):
-            if count == 0: return "0"
-            if 1 <= count <= 3: return "1-3"
-            if 4 <= count <= 5: return "4-5"
-            return "6+"
-
-        merged_stats['Bin'] = merged_stats['Crusher_Count'].apply(get_bin)
+    # --- OFFENSIVE SIDE ---
+    with col_off:
+        st.subheader("🏀 Offensive Crushers")
         
-        bin_order = ["0", "1-3", "4-5", "6+"]
-        bin_analysis = []
-        
-        for b in bin_order:
-            subset = merged_stats[merged_stats['Bin'] == b]
-            total = len(subset)
-            wins = subset['TEAM_VICTORY_INDICATOR'].sum()
-            win_pct = (wins / total * 100) if total > 0 else 0
-            
-            # 2. Dynamic Color Logic
-            if win_pct >= 75: color = "#28a745"   # Green
-            elif win_pct >= 51: color = "#ffc107" # Yellow
-            else: color = "#dc3545"               # Red
-            
-            bin_analysis.append({
-                "Bin": b, 
-                "WinPct": win_pct, 
-                "Record": f"{int(wins)}-{int(total-wins)}",
-                "DisplayPct": f"{win_pct:.0f}%",
-                "Color": color
-            })
-        
-        bin_df = pd.DataFrame(bin_analysis)
+        val_c = int(c_df['OFFENSIVE_CRUSH_INDICATOR'].sum())
+        p_g_c = (league_c['OFFENSIVE_CRUSH_INDICATOR'] < val_c).mean() * 100
+        p_c_c = (league_c[league_c['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE'] == conf]['TEAM_NAME'])]['OFFENSIVE_CRUSH_INDICATOR'] < val_c).mean() * 100
+        p_t_c = (league_c[league_c['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE_TYPE'] == tier]['TEAM_NAME'])]['OFFENSIVE_CRUSH_INDICATOR'] < val_c).mean() * 100
+        draw_card("Total Offensive Crushers", f"{val_c}", p_g_c, p_c_c, p_t_c, conf)
 
-        # 3. Custom Hover Template & Figure
-        fig_k3 = px.bar(
-            bin_df, x="Bin", y="WinPct",
-            text="Record",
-            color="Color",
-            color_discrete_map="identity",
-            template="plotly_dark",
-            height=145 # Adjusted to fit inside container
-        )
+        game_c = c_df.groupby('GAME_ID')['OFFENSIVE_CRUSH_INDICATOR'].sum().reset_index()
+        m_c = game_c.merge(win_logic, on='GAME_ID')
+        m_c['Bin'] = m_c['OFFENSIVE_CRUSH_INDICATOR'].apply(lambda x: "0" if x==0 else "1-3" if x<=3 else "4-5" if x<=5 else "6+")
         
-        fig_k3.update_traces(
-            textposition='outside',
-            textfont_size=10,
-            hovertemplate="<b>Crushers Achieved: %{x}</b><br>Record: %{text} (%{y:.0f}%)<extra></extra>"
-        )
-
-        fig_k3.update_layout(
-            margin=dict(l=5, r=5, t=20, b=5), # Added tiny margins to prevent edge-touching
-            xaxis=dict(title=None, tickfont_size=10),
-            yaxis=dict(visible=False, range=[0, 125]), 
-            showlegend=False,
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)"
-        )
-
-        # 2. Use a Streamlit container with custom CSS for the border
-        # This keeps the plotly chart "inside" the native streamlit flow
-        st.markdown("""
-            <style>
-            [data-testid="stVerticalBlock"] > div:nth-child(3) [data-testid="stVerticalBlock"] {
-                border: 1px solid #444;
-                border-radius: 10px;
-                background-color: #1e1e1e;
-                padding: 10px;
-            }
-            </style>
-            """, unsafe_allow_html=True)
+        bin_res_c = []
+        for b in ["0", "1-3", "4-5", "6+"]:
+            sub = m_c[m_c['Bin'] == b]
+            w = sub['TEAM_VICTORY_INDICATOR'].sum()
+            t = len(sub)
+            pct = (w/t*100) if t > 0 else 0
+            color = "#28a745" if pct >= 75 else "#ffc107" if pct >= 50 else "#dc3545"
+            bin_res_c.append({"Bin": b, "WinPct": pct, "Record": f"{int(w)}-{int(t-w)}", "Color": color})
         
-        # Simple column container for the content
+        fig_c = px.bar(pd.DataFrame(bin_res_c), x="Bin", y="WinPct", text="Record", color="Color", color_discrete_map="identity", template="plotly_dark", height=150)
+        fig_c.update_layout(margin=dict(l=5,r=5,t=20,b=5), xaxis_title=None, yaxis_visible=False, showlegend=False, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+        fig_c.update_traces(hovertemplate="<b>Crushers: %{x}</b><br>Record: %{text} (%{y:.0f}%)<extra></extra>")
+        
         with st.container():
-            st.markdown("<div style='color: #bbb; font-size: 0.85rem; text-align: center;'>Win Prob by Crusher Volume</div>", unsafe_allow_html=True)
-            st.plotly_chart(fig_k3, use_container_width=True, config={'displayModeBar': False})
+            st.markdown("<div style='color:#bbb; font-size:0.8rem; text-align:center;'>Win Prob by Crusher Count</div>", unsafe_allow_html=True)
+            fig_c.update_layout(
+                margin=dict(l=5, r=5, t=25, b=5), 
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_c, use_container_width=True, config={'displayModeBar': False})
 
-    # --- 3. HOT ZONES (Team Bars + NCAA Benchmark Line) ---
-    st.divider()
-    st.markdown("### 🌊 Offensive Crusher 'Hot Zones' vs. National Average")
-    st.caption("How this team's momentum compares to the typical NCAA scoring flow")
+        c_trend = c_df[c_df['OFFENSIVE_CRUSH_INDICATOR'] == 1].groupby('GAME_MINUTE').size().reset_index(name='count')
+        fig_wf_c = px.bar(c_trend, x='GAME_MINUTE', y='count', template="plotly_dark", color_discrete_sequence=['#3B12F5'], height=250)
+        fig_wf_c.update_layout(xaxis=dict(range=[0,42]), margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig_wf_c, use_container_width=True)
 
-    # 1. Team Data prep
-    crush_trend = active_runs.groupby('GAME_MINUTE').size().reset_index(name='Team_Count')
-    
-    # 2. NCAA Average prep (Normalized per team)
-    nat_active_runs = df_crushers[df_crushers['OFFENSIVE_CRUSH_INDICATOR'] == 1].copy()
-    nat_active_runs['GAME_MINUTE'] = nat_active_runs['GAME_CLOCK_TIME'].apply(clock_to_minute)
-    num_teams = df_crushers['TEAM_NAME'].nunique()
-    nat_trend = nat_active_runs.groupby('GAME_MINUTE').size().reset_index(name='Avg_Count')
-    nat_trend['Avg_Count'] = nat_trend['Avg_Count'] / num_teams
+    # --- DEFENSIVE SIDE ---
+    with col_def:
+        st.subheader("🛡️ Defensive Kills")
+        
+        val_k = int(k_df['DEFENSIVE_KILL_INDICATOR'].sum())
+        p_g_k = (league_k['DEFENSIVE_KILL_INDICATOR'] < val_k).mean() * 100
+        p_c_k = (league_k[league_k['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE'] == conf]['TEAM_NAME'])]['DEFENSIVE_KILL_INDICATOR'] < val_k).mean() * 100
+        p_t_k = (league_k[league_k['TEAM_NAME'].isin(df_teams[df_teams['CONFERENCE_TYPE'] == tier]['TEAM_NAME'])]['DEFENSIVE_KILL_INDICATOR'] < val_k).mean() * 100
+        draw_card("Total Defensive Kills", f"{val_k}", p_g_k, p_c_k, p_t_k, conf)
 
-    import plotly.graph_objects as go
+        game_k = k_df.groupby('GAME_ID')['DEFENSIVE_KILL_INDICATOR'].sum().reset_index()
+        m_k = game_k.merge(win_logic, on='GAME_ID')
+        m_k['Bin'] = m_k['DEFENSIVE_KILL_INDICATOR'].apply(lambda x: "0" if x==0 else "1-3" if x<=3 else "4-6" if x<=6 else "7+")
+        
+        bin_res_k = []
+        for b in ["0", "1-3", "4-6", "7+"]:
+            sub = m_k[m_k['Bin'] == b]
+            w = sub['TEAM_VICTORY_INDICATOR'].sum()
+            t = len(sub)
+            pct = (w/t*100) if t > 0 else 0
+            color = "#28a745" if pct >= 75 else "#ffc107" if pct >= 50 else "#dc3545"
+            bin_res_k.append({"Bin": b, "WinPct": pct, "Record": f"{int(w)}-{int(t-w)}", "Color": color})
+        
+        fig_k = px.bar(pd.DataFrame(bin_res_k), x="Bin", y="WinPct", text="Record", color="Color", color_discrete_map="identity", template="plotly_dark", height=150)
+        fig_k.update_layout(margin=dict(l=5,r=5,t=20,b=5), xaxis_title=None, yaxis_visible=False, showlegend=False, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+        fig_k.update_traces(hovertemplate="<b>Kills: %{x}</b><br>Record: %{text} (%{y:.0f}%)<extra></extra>")
 
-    fig_waterfall = go.Figure()
+        with st.container():
+            st.markdown("<div style='color:#bbb; font-size:0.8rem; text-align:center;'>Win Prob by Kill Count</div>", unsafe_allow_html=True)
+            fig_k.update_layout(
+                margin=dict(l=5, r=5, t=25, b=5), 
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)"
+            )
+            st.plotly_chart(fig_k, use_container_width=True, config={'displayModeBar': False})
 
-    # TEAM BARS: Strong, Solid Blue
-    fig_waterfall.add_trace(go.Bar(
-        x=crush_trend['GAME_MINUTE'], 
-        y=crush_trend['Team_Count'], 
-        name=selected_team, 
-        marker_color="#3B12F5",
-        opacity=0.9,
-        hovertemplate=f"<b>{selected_team}</b><br>Minute %{{x}}: %{{y}} Crushers<extra></extra>"
-    ))
+        k_trend = k_df[k_df['DEFENSIVE_KILL_INDICATOR'] == 1].groupby('GAME_MINUTE').size().reset_index(name='count')
+        fig_wf_k = px.bar(k_trend, x='GAME_MINUTE', y='count', template="plotly_dark", color_discrete_sequence=['#FF4B4B'], height=250)
+        fig_wf_k.update_layout(xaxis=dict(range=[0,42]), margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig_wf_k, use_container_width=True)
 
-    # NCAA AVERAGE: A "Ghost Line" with markers
-    fig_waterfall.add_trace(go.Scatter(
-        x=nat_trend['GAME_MINUTE'], 
-        y=nat_trend['Avg_Count'], 
-        name="NCAA Avg",
-        mode='lines+markers',
-        line=dict(color="rgba(255, 255, 255, 0.5)", width=2, shape='spline'),
-        marker=dict(size=4, color="white"),
-        fill='tozeroy', # Shading under the line for better visibility
-        fillcolor='rgba(255, 255, 255, 0.05)',
-        hovertemplate="<b>NCAA Avg</b><br>Minute %{x}: %{y:.2f}<extra></extra>"
-    ))
-
-    fig_waterfall.update_layout(
-        template="plotly_dark",
-        xaxis=dict(range=[0, 42], title="Minute of Game", tickmode='linear', dtick=5),
-        yaxis=dict(title="Occurrences / Avg"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=0, r=0, t=30, b=0)
-    )
-
-    # Re-apply your V-Rects
-    fig_waterfall.add_vrect(x0=1, x1=4, fillcolor="green", opacity=0.07, annotation_text="Start")
-    fig_waterfall.add_vrect(x0=17, x1=20, fillcolor="green", opacity=0.07, annotation_text="Into Half")
-    fig_waterfall.add_vrect(x0=21, x1=24, fillcolor="green", opacity=0.07, annotation_text="Out of Half")
-    fig_waterfall.add_vrect(x0=37, x1=40, fillcolor="green", opacity=0.07, annotation_text="End")
-
-    st.plotly_chart(fig_waterfall, use_container_width=True)
-
-    # --- 4. THE HALFTIME PIVOT (League Scatterplot) ---
+    # --- 3. THE HALFTIME PIVOT ---
     st.divider()
     st.markdown("### 🔄 Halftime Pivot: Adjustment Scatter")
-    
-    # Toggle for Scope
-    scope = st.radio("View Scope:", ["All NCAA", f"{conf} Conference Only"], horizontal=True, label_visibility="collapsed")
+        
+    scope = st.radio("View Scope:", ["All NCAA", f"{conf} Conference Only"], horizontal=True, label_visibility="collapsed", key="pivot_scope_unique")
 
-    # 1. Prep Pivot Data (Join with df_teams to get Conference info)
     df_pivot_all = df_crushers.copy()
     df_pivot_all['GAME_MINUTE'] = df_pivot_all['GAME_CLOCK_TIME'].apply(clock_to_minute)
     df_pivot_all = df_pivot_all[df_pivot_all['GAME_MINUTE'].between(17, 24)]
     df_pivot_all['window'] = np.where(df_pivot_all['GAME_MINUTE'] <= 20, 'End_1H', 'Start_2H')
     
-    # Aggregate Scoring %
     league_pivot = df_pivot_all.groupby(['TEAM_NAME', 'window'])['POSSESSION_RESULT_SCORE'].mean().unstack().reset_index()
     league_pivot.columns = ['Team', 'End_1H', 'Start_2H']
-    
-    # Merge with df_teams to get Conference for filtering/coloring
     league_pivot = league_pivot.merge(df_teams[['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE']], left_on='Team', right_on='TEAM_NAME').dropna()
 
-    # 2. Filter based on Toggle
     if "Conference Only" in scope:
         plot_df = league_pivot[league_pivot['CONFERENCE'] == conf].copy()
-        color_col = None # Simple coloring for conference view
+        color_col = None 
     else:
         plot_df = league_pivot.copy()
         color_col = 'CONFERENCE_TYPE'
 
-    # 3. Create the Scatter
     fig_scatter = px.scatter(
-        plot_df, 
-        x='End_1H', 
-        y='Start_2H',
+        plot_df, x='End_1H', y='Start_2H',
         color=color_col,
         hover_name='Team',
         hover_data={'CONFERENCE': True, 'End_1H': ':.1%', 'Start_2H': ':.1%'},
         template="plotly_dark",
         labels={'End_1H': 'Final 4m (1H) Scoring %', 'Start_2H': 'First 4m (2H) Scoring %'},
         opacity=0.75,
-        color_discrete_map={'Power': "#F3A30F", 'Other': "#72D3F3"} # Power teams in red, others muted
+        color_discrete_map={'Power': "#F3A30F", 'Mid-Major': "#72D3F3"} # Match your data labels here
     )
     
-    # Highlight Selected Team
     team_dot = league_pivot[league_pivot['Team'] == selected_team]
-    fig_scatter.add_trace(go.Scatter(
-        x=team_dot['End_1H'], 
-        y=team_dot['Start_2H'], 
-        mode='markers+text',
-        marker=dict(color="#3B12F5", size=18, symbol='star', line=dict(color='white', width=2)),
-        name=selected_team,
-        # text=[selected_team],
-        textposition="top center"
-    ))
+    if not team_dot.empty:
+        fig_scatter.add_trace(go.Scatter(
+            x=team_dot['End_1H'], 
+            y=team_dot['Start_2H'], 
+            mode='markers+text',
+            marker=dict(color="#3B12F5", size=18, symbol='star', line=dict(color='white', width=2)),
+            text=[selected_team],
+            textposition="top center",
+            name=selected_team,
+            showlegend=False
+        ))
 
-    # Add Y=X line
-    max_val = max(plot_df['End_1H'].max(), plot_df['Start_2H'].max())
+    max_val = max(plot_df['End_1H'].max(), plot_df['Start_2H'].max()) if not plot_df.empty else 1
     fig_scatter.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val, line=dict(color="white", dash="dash", width=1))
-
-    # Add Quadrant Annotations
     fig_scatter.add_annotation(x=max_val, y=max_val, text="Improved After Half ↗", showarrow=False, yshift=10, font=dict(color="#28a745"))
     fig_scatter.add_annotation(x=max_val, y=0, text="Faded After Half ↘", showarrow=False, yshift=-10, font=dict(color="#dc3545"))
-
     fig_scatter.update_layout(
         margin=dict(l=0, r=0, t=20, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
+    )    
     st.plotly_chart(fig_scatter, use_container_width=True)
