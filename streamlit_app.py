@@ -8,7 +8,12 @@ import plotly.graph_objects as go
 
 
 # PAGE CONFIG & AUTH
-st.set_page_config(page_title="Snowflake Sports Analytics", layout="wide")
+st.set_page_config(
+    page_title="CBB Analytics",
+    layout="wide",
+    initial_sidebar_state="expanded" if st.session_state.get('selection') == "🏠 Home" else "collapsed"
+)
+
 def get_private_key():
     p_key_text = st.secrets["connections"]["snowflake"]["private_key_content"]
     passphrase = st.secrets["connections"]["snowflake"].get("private_key_passphrase")
