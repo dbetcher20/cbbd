@@ -6,7 +6,6 @@ from cryptography.hazmat.primitives import serialization
 import numpy as np
 import plotly.graph_objects as go 
 
-
 # PAGE CONFIG & AUTH
 st.set_page_config(
     page_title="CBB Analytics",
@@ -37,8 +36,9 @@ def load_all_data():
     df_games = conn.query("SELECT * FROM cbb_data.views.fact_game_team_stats")
     df_crushers = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_offensive_crushers")
     df_kills = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_defensive_kills")
-    return df_teams, df_ato, df_games, df_crushers, df_kills
-df_teams, df_ato, df_games, df_crushers, df_kills = load_all_data()
+    df_scoring_runs = conn.query("SELECT * FROM cbb_data.views.fact_scoring_runs")
+    return df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs
+df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs = load_all_data()
 
 team_list = sorted(df_teams['TEAM_NAME'].unique())
 try:
@@ -174,6 +174,86 @@ elif selection == "📊 Team Breakdown":
         p_t = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE_TYPE'] == tier])
         with c_def[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
 
+# --- SCORING RUNS ANALYSIS (BUG FIX VERSION) ---
+    st.divider()
+    st.markdown(f"### 🌊 Scoring Run Impact: {team_blue}", unsafe_allow_html=True)
+
+    # 1. Prep Run Data (Filter for Selected Team FIRST to avoid double records)
+    team_runs = df_scoring_runs[df_scoring_runs['TEAM_ON_RUN'] == selected_team].copy()
+    big_runs = team_runs[team_runs['TOTAL_RUN_POINTS'] >= 10].copy()
+
+    # 2. Benchmarking (Improved Percentile Logic)
+    all_teams_runs = df_teams[['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE']].copy()
+    run_counts = df_scoring_runs[df_scoring_runs['TOTAL_RUN_POINTS'] >= 10].groupby('TEAM_ON_RUN').size().reset_index(name='run_count')
+    league_runs = all_teams_runs.merge(run_counts, left_on='TEAM_NAME', right_on='TEAM_ON_RUN', how='left').fillna(0)
+
+    val_r = int(len(big_runs))
+
+    def calculate_balanced_pct(value, series):
+        if series.empty: return 0
+        # Percentile = (Count Below + 0.5 * Count Tied) / Total Count
+        below = (series < value).sum()
+        tied = (series == value).sum()
+        return ((below + (0.5 * tied)) / len(series)) * 100
+
+    p_g_r = calculate_balanced_pct(val_r, league_runs['run_count'])
+    p_c_r = calculate_balanced_pct(val_r, league_runs[league_runs['CONFERENCE'] == conf]['run_count'])
+    p_t_r = calculate_balanced_pct(val_r, league_runs[league_runs['CONFERENCE_TYPE'] == tier]['run_count'])
+
+    r_col1, r_col2 = st.columns([1, 2])
+    with r_col1:
+        draw_card("Total 10+ Pt Runs", f"{val_r}", p_g_r, p_c_r, p_t_r, conf)
+
+    # 3. Win Rate vs Run Count (Fixed Ordering)
+    with r_col2:
+        runs_per_game = big_runs.groupby('GAME_ID').size().reset_index(name='run_count_per_game')
+        # team_games already filtered for selected_team in your existing code
+        win_analysis = team_games[['GAME_ID', 'TEAM_VICTORY_INDICATOR']].merge(runs_per_game, on='GAME_ID', how='left').fillna(0)
+        
+        win_analysis['Run_Bin'] = win_analysis['run_count_per_game'].apply(lambda x: "0 Runs" if x == 0 else "1 Run" if x == 1 else "2+ Runs")
+        
+        bin_stats = []
+        # Explicit order list
+        ordered_bins = ["0 Runs", "1 Run", "2+ Runs"]
+        for b in ordered_bins:
+            sub = win_analysis[win_analysis['Run_Bin'] == b]
+            wins = sub['TEAM_VICTORY_INDICATOR'].sum()
+            total = len(sub)
+            win_pct = (wins / total * 100) if total > 0 else 0
+            color = "#28a745" if win_pct >= 75 else "#ffc107" if win_pct >= 50 else "#dc3545"
+            
+            bin_stats.append({"Bin": b, "WinPct": win_pct, "Record": f"{int(wins)}-{int(total-wins)}", "Color": color})
+
+        fig_runs = px.bar(
+            pd.DataFrame(bin_stats), x="Bin", y="WinPct", text="Record", color="Color",
+            color_discrete_map="identity", template="plotly_dark", height=200
+        )
+        fig_runs.update_layout(
+            margin=dict(l=10, r=10, t=10, b=10), 
+            yaxis_range=[0, 105],
+            showlegend=False,
+            # FORCED ORDERING
+            xaxis={'categoryorder':'array', 'categoryarray': ordered_bins, 'title': None}
+        )
+        st.plotly_chart(fig_runs, use_container_width=True, config={'displayModeBar': False})
+
+    # 4. Enhanced Log (Filtered and Cleaned)
+    if not big_runs.empty:
+        with st.expander("🔍 Detailed 10+ Point Run Log"):
+            # Merge big_runs with game context ONLY for the selected team's view
+            display_runs = big_runs.merge(
+                team_games[['GAME_ID', 'GAME_DATE', 'OPPONENT_TEAM_NAME', 'TEAM_VICTORY_INDICATOR']], 
+                on='GAME_ID'
+            ).sort_values(['GAME_DATE', 'RUN_START_CLOCK'], ascending=[False, False])
+            
+            display_runs['Result'] = display_runs['TEAM_VICTORY_INDICATOR'].apply(lambda x: "✅ W" if x else "❌ L")
+            display_runs['GAME_DATE'] = pd.to_datetime(display_runs['GAME_DATE']).dt.date
+            
+            final_table = display_runs[['GAME_DATE', 'OPPONENT_TEAM_NAME', 'Result', 'TOTAL_RUN_POINTS', 'NUM_SCORING_PLAYS_IN_RUN', 'RUN_START_CLOCK', 'RUN_END_CLOCK']]
+            final_table.columns = ['Date', 'Opponent', 'Game Result', 'Points', 'Plays', 'Start', 'End']
+            
+            st.dataframe(final_table, use_container_width=True, hide_index=True)
+
     # --- 4. TRENDS ---
     st.divider()
     st.markdown(f"### 📈 Trends: {team_blue} vs Opponents{filter_status}", unsafe_allow_html=True)
@@ -186,9 +266,6 @@ elif selection == "📊 Team Breakdown":
         plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce').fillna(0)
 
     metric_label = suffix.replace('_', ' ').title()
-
-    import plotly.graph_objects as go
-    import numpy as np
     fig = go.Figure()
 
     # Team Trace
