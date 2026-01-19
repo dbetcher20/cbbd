@@ -97,13 +97,10 @@ if selection == "🏠 Home":
 elif selection == "📊 Team Breakdown":
     # --- 1. DATA PREP & GLOBAL FILTER ---
     df_games['GAME_DATE'] = pd.to_datetime(df_games['GAME_DATE'])
-    
-    # Base dataset for the selected team
     raw_team_games = df_games[df_games['TEAM_NAME'] == selected_team].copy()
     
-    st.markdown(f"## 📊 {selected_team} Performance Breakdown")
+    st.markdown(f"## :bar_chart: {selected_team} Performance Breakdown")
     
-    # Master Toggle for Report Context
     t1, t2 = st.columns([1, 2])
     with t1:
         power_filter = st.toggle("⚡ Power Conference Opponents Only", value=False)
@@ -119,186 +116,238 @@ elif selection == "📊 Team Breakdown":
         st.warning(f"No games found for {selected_team} against Power Conference opponents.")
         st.stop()
 
-    # Sort for calculations (Ascending for running record)
     team_games = team_games.sort_values('GAME_DATE', ascending=True)
-    
-    # Calculate Running Record based on CURRENT filter
     team_games['Wins_Cum'] = team_games['TEAM_VICTORY_INDICATOR'].cumsum()
     team_games['Losses_Cum'] = (~team_games['TEAM_VICTORY_INDICATOR']).cumsum()
     team_games['Record_Str'] = team_games.apply(
         lambda x: f"{'W' if x['TEAM_VICTORY_INDICATOR'] else 'L'} ({int(x['Wins_Cum'])}-{int(x['Losses_Cum'])})", axis=1
     )
 
-    # --- 2. PERCENTILE ENGINE & UTILS ---
+    # --- 2. PERCENTILE ENGINE & TRUE % UTILS ---
     team_info = df_teams[df_teams['TEAM_NAME'] == selected_team].iloc[0]
     conf, tier = team_info['CONFERENCE'], team_info['CONFERENCE_TYPE']
     team_blue = f"<span style='color: #3B12F5; text-decoration: underline; font-weight: bold;'>{selected_team}</span>"
 
-    stat_cols = ['TEAM_POINTS', 'TEAM_2PT_FG_PERCENT', 'TEAM_3PT_FG_PERCENT', 'TEAM_FT_PERCENT', 'TEAM_EFFECTIVE_FG_PERCENT',
-                 'OPPONENT_POINTS', 'OPPONENT_2PT_FG_PERCENT', 'OPPONENT_3PT_FG_PERCENT', 'OPPONENT_FT_PERCENT', 'OPPONENT_EFFECTIVE_FG_PERCENT']
+    # Define the raw columns needed for true calculation
+    raw_stat_cols = [
+        'TEAM_POINTS', 'TEAM_2PT_FG_MADE', 'TEAM_2PT_FG_ATTEMPT', 'TEAM_3PT_FG_MADE', 'TEAM_3PT_FG_ATTEMPT', 'TEAM_FT_MADE', 'TEAM_FT_ATTEMPT',
+        'OPPONENT_POINTS', 'OPPONENT_2PT_FG_MADE', 'OPPONENT_2PT_FG_ATTEMPT', 'OPPONENT_3PT_FG_MADE', 'OPPONENT_3PT_FG_ATTEMPT', 'OPPONENT_FT_MADE', 'OPPONENT_FT_ATTEMPT'
+    ]
     
-    all_teams_avg = df_games.groupby(['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE'])[stat_cols].mean().reset_index()
+    # Calculate Season Totals for all teams to create the distribution
+    league_totals = df_games.groupby(['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE'])[raw_stat_cols].sum().reset_index()
+    
+    for col in raw_stat_cols:
+            league_totals[col] = pd.to_numeric(league_totals[col], errors='coerce').fillna(0)
 
-    def get_pct(col, val, group_df=all_teams_avg):
+    # Helper to calculate percentages for a dataframe
+    def add_true_percentages(df):
+        # Offensive
+        df['TEAM_2PT_FG_PERCENT'] = df['TEAM_2PT_FG_MADE'] / df['TEAM_2PT_FG_ATTEMPT']
+        df['TEAM_3PT_FG_PERCENT'] = df['TEAM_3PT_FG_MADE'] / df['TEAM_3PT_FG_ATTEMPT']
+        df['TEAM_FT_PERCENT'] = df['TEAM_FT_MADE'] / df['TEAM_FT_ATTEMPT']
+        # eFG% = (Total FGM + 0.5 * 3PM) / Total FGA
+        df['TEAM_EFFECTIVE_FG_PERCENT'] = ((df['TEAM_2PT_FG_MADE'] + df['TEAM_3PT_FG_MADE']) + 0.5 * df['TEAM_3PT_FG_MADE']) / (df['TEAM_2PT_FG_ATTEMPT'] + df['TEAM_3PT_FG_ATTEMPT'])
+        
+        # Defensive
+        df['OPPONENT_2PT_FG_PERCENT'] = df['OPPONENT_2PT_FG_MADE'] / df['OPPONENT_2PT_FG_ATTEMPT']
+        df['OPPONENT_3PT_FG_PERCENT'] = df['OPPONENT_3PT_FG_MADE'] / df['OPPONENT_3PT_FG_ATTEMPT']
+        df['OPPONENT_FT_PERCENT'] = df['OPPONENT_FT_MADE'] / df['OPPONENT_FT_ATTEMPT']
+        df['OPPONENT_EFFECTIVE_FG_PERCENT'] = ((df['OPPONENT_2PT_FG_MADE'] + df['OPPONENT_3PT_FG_MADE']) + 0.5 * df['OPPONENT_3PT_FG_MADE']) / (df['OPPONENT_2PT_FG_ATTEMPT'] + df['OPPONENT_3PT_FG_ATTEMPT'])
+        
+        # Points should stay as an average (PPG)
+        return df
+
+    # League True Averages (benchmarking against points is slightly different)
+    all_teams_bench = add_true_percentages(league_totals)
+    league_ppg = df_games.groupby(['TEAM_NAME'])[['TEAM_POINTS', 'OPPONENT_POINTS']].mean().reset_index()
+    all_teams_bench = all_teams_bench.drop(columns=['TEAM_POINTS', 'OPPONENT_POINTS']).merge(league_ppg, on='TEAM_NAME')
+
+    def get_pct(col, val, group_df=all_teams_bench):
         if group_df.empty: return 0
-        dist = group_df[col]
+        dist = group_df[col].dropna()
         return (dist > val).mean() * 100 if "OPPONENT" in col else (dist < val).mean() * 100
-
+    
     # --- 3. OFFENSIVE & DEFENSIVE PROFILES ---
     st.markdown(f"### Performance Profile {filter_status}", unsafe_allow_html=True)
+
+    for col in raw_stat_cols:
+        if col in team_games.columns:
+            team_games[col] = pd.to_numeric(team_games[col], errors='coerce').fillna(0).astype(float)
     
+    # 2. Now calculate Season Totals (these will now be standard floats)
+    team_totals = team_games[raw_stat_cols].sum()
+
     # Offensive Section
-    st.subheader("🏀 Offensive Profile")
-    off_stats = [("Points", "TEAM_POINTS", ".1f"), ("2PT %", "TEAM_2PT_FG_PERCENT", ".1%"),
-                 ("3PT %", "TEAM_3PT_FG_PERCENT", ".1%"), ("FT %", "TEAM_FT_PERCENT", ".1%"),
-                 ("eFG %", "TEAM_EFFECTIVE_FG_PERCENT", ".1%")]
+    st.subheader(":basketball: Offensive Profile")
+    # Mapping label to (True Percentage Value, Benchmark Column)
+    off_profiles = [
+        ("Points", team_games['TEAM_POINTS'].mean(), "TEAM_POINTS", ".1f"),
+        ("2PT %", team_totals['TEAM_2PT_FG_MADE'] / team_totals['TEAM_2PT_FG_ATTEMPT'] if team_totals['TEAM_2PT_FG_ATTEMPT'] > 0 else 0, "TEAM_2PT_FG_PERCENT", ".1%"),
+        ("3PT %", team_totals['TEAM_3PT_FG_MADE'] / team_totals['TEAM_3PT_FG_ATTEMPT'] if team_totals['TEAM_3PT_FG_ATTEMPT'] > 0 else 0, "TEAM_3PT_FG_PERCENT", ".1%"),
+        ("FT %", team_totals['TEAM_FT_MADE'] / team_totals['TEAM_FT_ATTEMPT'] if team_totals['TEAM_FT_ATTEMPT'] > 0 else 0, "TEAM_FT_PERCENT", ".1%"),
+        ("eFG %", ((team_totals['TEAM_2PT_FG_MADE'] + team_totals['TEAM_3PT_FG_MADE']) + (0.5 * team_totals['TEAM_3PT_FG_MADE'])) / (team_totals['TEAM_2PT_FG_ATTEMPT'] + team_totals['TEAM_3PT_FG_ATTEMPT']) if (team_totals['TEAM_2PT_FG_ATTEMPT'] + team_totals['TEAM_3PT_FG_ATTEMPT']) > 0 else 0, "TEAM_EFFECTIVE_FG_PERCENT", ".1%")
+    ]
+    
     c_off = st.columns(5)
-    for i, (lab, col, fmt) in enumerate(off_stats):
-        val = team_games[col].mean()
+    for i, (lab, val, col, fmt) in enumerate(off_profiles):
         p_g = get_pct(col, val)
-        p_c = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE'] == conf])
-        p_t = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE_TYPE'] == tier])
+        p_c = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE'] == conf])
+        p_t = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE_TYPE'] == tier])
         with c_off[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
 
     # Defensive Section
     st.write("")
-    st.subheader("🛡️ Defensive Profile")
-    def_stats = [("Pts Allowed", "OPPONENT_POINTS", ".1f"), ("Opp 2PT %", "OPPONENT_2PT_FG_PERCENT", ".1%"),
-                 ("Opp 3PT %", "OPPONENT_3PT_FG_PERCENT", ".1%"), ("Opp FT %", "OPPONENT_FT_PERCENT", ".1%"),
-                 ("Opp eFG %", "OPPONENT_EFFECTIVE_FG_PERCENT", ".1%")]
+    st.subheader(":shield: Defensive Profile")
+    def_profiles = [
+        ("Pts Allowed", team_games['OPPONENT_POINTS'].mean(), "OPPONENT_POINTS", ".1f"),
+        ("Opp 2PT %", team_totals['OPPONENT_2PT_FG_MADE'] / team_totals['OPPONENT_2PT_FG_ATTEMPT'], "OPPONENT_2PT_FG_PERCENT", ".1%"),
+        ("Opp 3PT %", team_totals['OPPONENT_3PT_FG_MADE'] / team_totals['OPPONENT_3PT_FG_ATTEMPT'], "OPPONENT_3PT_FG_PERCENT", ".1%"),
+        ("Opp FT %", team_totals['OPPONENT_FT_MADE'] / team_totals['OPPONENT_FT_ATTEMPT'], "OPPONENT_FT_PERCENT", ".1%"),
+        ("Opp eFG %", ((team_totals['OPPONENT_2PT_FG_MADE'] + team_totals['OPPONENT_3PT_FG_MADE']) + 0.5 * team_totals['OPPONENT_3PT_FG_MADE']) / (team_totals['OPPONENT_2PT_FG_ATTEMPT'] + team_totals['OPPONENT_3PT_FG_ATTEMPT']), "OPPONENT_EFFECTIVE_FG_PERCENT", ".1%")
+    ]
+    
     c_def = st.columns(5)
-    for i, (lab, col, fmt) in enumerate(def_stats):
-        val = team_games[col].mean()
+    for i, (lab, val, col, fmt) in enumerate(def_profiles):
         p_g = get_pct(col, val)
-        p_c = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE'] == conf])
-        p_t = get_pct(col, val, all_teams_avg[all_teams_avg['CONFERENCE_TYPE'] == tier])
+        p_c = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE'] == conf])
+        p_t = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE_TYPE'] == tier])
         with c_def[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
 
-# --- SCORING RUNS ANALYSIS (BUG FIX VERSION) ---
+# --- SCORING RUNS & RESILIENCE (RE-INTEGRATED) ---
     st.divider()
-    st.markdown(f"### 🌊 Scoring Run Impact: {team_blue}", unsafe_allow_html=True)
+    st.markdown(f"### 🌊 Scoring Momentum & Resilience: {team_blue}", unsafe_allow_html=True)
 
-    # 1. Prep Run Data (Filter for Selected Team FIRST to avoid double records)
-    team_runs = df_scoring_runs[df_scoring_runs['TEAM_ON_RUN'] == selected_team].copy()
-    big_runs = team_runs[team_runs['TOTAL_RUN_POINTS'] >= 10].copy()
-
-    # 2. Benchmarking (Improved Percentile Logic)
-    all_teams_runs = df_teams[['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE']].copy()
-    run_counts = df_scoring_runs[df_scoring_runs['TOTAL_RUN_POINTS'] >= 10].groupby('TEAM_ON_RUN').size().reset_index(name='run_count')
-    league_runs = all_teams_runs.merge(run_counts, left_on='TEAM_NAME', right_on='TEAM_ON_RUN', how='left').fillna(0)
-
-    val_r = int(len(big_runs))
-
-    def calculate_balanced_pct(value, series):
+    # 1. UTILS: Percentile & Binning
+    def get_run_percentile(value, series, lower_is_better=False):
         if series.empty: return 0
-        # Percentile = (Count Below + 0.5 * Count Tied) / Total Count
-        below = (series < value).sum()
+        below = (series > value).sum() if lower_is_better else (series < value).sum()
         tied = (series == value).sum()
         return ((below + (0.5 * tied)) / len(series)) * 100
 
-    p_g_r = calculate_balanced_pct(val_r, league_runs['run_count'])
-    p_c_r = calculate_balanced_pct(val_r, league_runs[league_runs['CONFERENCE'] == conf]['run_count'])
-    p_t_r = calculate_balanced_pct(val_r, league_runs[league_runs['CONFERENCE_TYPE'] == tier]['run_count'])
+    # 2. DATA PREP: Benchmarking
+    all_teams_list = df_teams[['TEAM_NAME', 'CONFERENCE', 'CONFERENCE_TYPE']].copy()
+    run_counts_for = df_scoring_runs[df_scoring_runs['TOTAL_RUN_POINTS'] >= 10].groupby('TEAM_ON_RUN').size().reset_index(name='run_count')
+    league_runs_for = all_teams_list.merge(run_counts_for, left_on='TEAM_NAME', right_on='TEAM_ON_RUN', how='left').fillna(0)
 
-    r_col1, r_col2 = st.columns([1, 2])
-    with r_col1:
-        draw_card("Total 10+ Pt Runs", f"{val_r}", p_g_r, p_c_r, p_t_r, conf)
+    runs_against_base = df_scoring_runs[df_scoring_runs['TOTAL_RUN_POINTS'] >= 10].merge(df_games[['GAME_ID', 'TEAM_NAME', 'OPPONENT_TEAM_NAME']], on='GAME_ID')
+    runs_against_counts = runs_against_base[runs_against_base['TEAM_ON_RUN'] == runs_against_base['OPPONENT_TEAM_NAME']].groupby('TEAM_NAME').size().reset_index(name='gave_up_count')
+    league_runs_against = all_teams_list.merge(runs_against_counts, on='TEAM_NAME', how='left').fillna(0)
 
-    # 3. Win Rate vs Run Count (Fixed Ordering)
-    with r_col2:
-        runs_per_game = big_runs.groupby('GAME_ID').size().reset_index(name='run_count_per_game')
-        # team_games already filtered for selected_team in your existing code
-        win_analysis = team_games[['GAME_ID', 'TEAM_VICTORY_INDICATOR']].merge(runs_per_game, on='GAME_ID', how='left').fillna(0)
+    # 3. TEAM SPECIFIC DATA
+    runs_for = df_scoring_runs[(df_scoring_runs['TEAM_ON_RUN'] == selected_team) & (df_scoring_runs['TOTAL_RUN_POINTS'] >= 10)].copy()
+    runs_against = df_scoring_runs[(df_scoring_runs['GAME_ID'].isin(team_games['GAME_ID'])) & (df_scoring_runs['TEAM_ON_RUN'] != selected_team) & (df_scoring_runs['TOTAL_RUN_POINTS'] >= 10)].copy()
+
+    # 4. UI LAYOUT
+    col_made, col_given = st.columns(2)
+
+    # --- LEFT COLUMN: RUNS MADE ---
+    with col_made:
+        val_for = len(runs_for)
+        p_g_for = get_run_percentile(val_for, league_runs_for['run_count'])
+        draw_card("10+ Pt Runs Made", f"{val_for}", p_g_for, 0, 0, conf)
         
-        win_analysis['Run_Bin'] = win_analysis['run_count_per_game'].apply(lambda x: "0 Runs" if x == 0 else "1 Run" if x == 1 else "2+ Runs")
+        # Win Rate Chart (Runs Made)
+        with st.container(border=True):
+            counts_f = runs_for.groupby('GAME_ID').size().reset_index(name='c')
+            win_f = team_games[['GAME_ID', 'TEAM_VICTORY_INDICATOR']].merge(counts_f, on='GAME_ID', how='left').fillna(0)
+            win_f['Bin'] = win_f['c'].apply(lambda x: "0 Runs" if x == 0 else "1 Run" if x == 1 else "2+ Runs")
+            
+            f_stats = []
+            ordered_f = ["0 Runs", "1 Run", "2+ Runs"]
+            for b in ordered_f:
+                sub = win_f[win_f['Bin'] == b]
+                w, t = sub['TEAM_VICTORY_INDICATOR'].sum(), len(sub)
+                pct = (w/t*100) if t > 0 else 0
+                clr = "#28a745" if pct >= 75 else "#ffc107" if pct >= 51 else "#dc3545"
+                f_stats.append({"Bin": b, "WinPct": pct, "Rec": f"{int(w)}-{int(t-w)}", "Color": clr})
+            
+            fig_f = px.bar(pd.DataFrame(f_stats), x="Bin", y="WinPct", text="Rec", color="Color", color_discrete_map="identity", template="plotly_dark", height=180)
+            fig_f.update_layout(margin=dict(l=5,r=5,t=5,b=5), yaxis_range=[0,105], showlegend=False, xaxis={'categoryorder':'array', 'categoryarray': ordered_f, 'title': None})
+            st.plotly_chart(fig_f, use_container_width=True, config={'displayModeBar': False})
+
+    # --- RIGHT COLUMN: RUNS GIVEN UP ---
+    with col_given:
+        val_against = len(runs_against)
+        p_g_against = get_run_percentile(val_against, league_runs_against['gave_up_count'], lower_is_better=True)
+        draw_card("10+ Pt Runs Given Up", f"{val_against}", p_g_against, 0, 0, conf)
         
-        bin_stats = []
-        # Explicit order list
-        ordered_bins = ["0 Runs", "1 Run", "2+ Runs"]
-        for b in ordered_bins:
-            sub = win_analysis[win_analysis['Run_Bin'] == b]
-            wins = sub['TEAM_VICTORY_INDICATOR'].sum()
-            total = len(sub)
-            win_pct = (wins / total * 100) if total > 0 else 0
-            color = "#28a745" if win_pct >= 75 else "#ffc107" if win_pct >= 50 else "#dc3545"
+        # Win Rate Chart (Resilience)
+        with st.container(border=True):
+            counts_a = runs_against.groupby('GAME_ID').size().reset_index(name='c')
+            win_a = team_games[['GAME_ID', 'TEAM_VICTORY_INDICATOR']].merge(counts_a, on='GAME_ID', how='left').fillna(0)
+            win_a['Bin'] = win_a['c'].apply(lambda x: "0 Given" if x == 0 else "1 Given" if x == 1 else "2+ Given")
             
-            bin_stats.append({"Bin": b, "WinPct": win_pct, "Record": f"{int(wins)}-{int(total-wins)}", "Color": color})
+            a_stats = []
+            ordered_a = ["0 Given", "1 Given", "2+ Given"]
+            for b in ordered_a:
+                sub = win_a[win_a['Bin'] == b]
+                w, t = sub['TEAM_VICTORY_INDICATOR'].sum(), len(sub)
+                pct = (w/t*100) if t > 0 else 0
+                clr = "#28a745" if pct >= 75 else "#ffc107" if pct >= 51 else "#dc3545"
+                a_stats.append({"Bin": b, "WinPct": pct, "Rec": f"{int(w)}-{int(t-w)}", "Color": clr})
+            
+            fig_a = px.bar(pd.DataFrame(a_stats), x="Bin", y="WinPct", text="Rec", color="Color", color_discrete_map="identity", template="plotly_dark", height=180)
+            fig_a.update_layout(margin=dict(l=5,r=5,t=5,b=5), yaxis_range=[0,105], showlegend=False, xaxis={'categoryorder':'array', 'categoryarray': ordered_a, 'title': None})
+            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False})
 
-        fig_runs = px.bar(
-            pd.DataFrame(bin_stats), x="Bin", y="WinPct", text="Record", color="Color",
-            color_discrete_map="identity", template="plotly_dark", height=200
-        )
-        fig_runs.update_layout(
-            margin=dict(l=10, r=10, t=10, b=10), 
-            yaxis_range=[0, 105],
-            showlegend=False,
-            # FORCED ORDERING
-            xaxis={'categoryorder':'array', 'categoryarray': ordered_bins, 'title': None}
-        )
-        st.plotly_chart(fig_runs, use_container_width=True, config={'displayModeBar': False})
+    # --- 5. UNIFIED LOG ---
+    st.write("")
+    st.subheader("📅 Unified Momentum Log (10+ Point Runs)")
+    runs_for['Type'], runs_against['Type'] = '🏃 GONE ON', '🛡️ SURRENDERED'
+    all_big_runs = pd.concat([runs_for, runs_against])
+    combined_log = all_big_runs.merge(team_games[['GAME_ID', 'GAME_DATE', 'OPPONENT_TEAM_NAME', 'TEAM_VICTORY_INDICATOR']], on='GAME_ID').sort_values(['GAME_DATE', 'RUN_START_CLOCK'], ascending=[False, False])
+    combined_log['Res'], combined_log['GAME_DATE'] = combined_log['TEAM_VICTORY_INDICATOR'].apply(lambda x: "W" if x else "L"), pd.to_datetime(combined_log['GAME_DATE']).dt.date
+    display_log = combined_log[['GAME_DATE', 'Type', 'OPPONENT_TEAM_NAME', 'Res', 'TOTAL_RUN_POINTS', 'NUM_SCORING_PLAYS_IN_RUN', 'RUN_START_CLOCK', 'RUN_END_CLOCK']]
+    display_log.columns = ['Date', 'Type', 'Opponent', 'Result', 'Pts', 'Plays', 'Start', 'End']
 
-    # 4. Enhanced Log (Filtered and Cleaned)
-    if not big_runs.empty:
-        with st.expander("🔍 Detailed 10+ Point Run Log"):
-            # Merge big_runs with game context ONLY for the selected team's view
-            display_runs = big_runs.merge(
-                team_games[['GAME_ID', 'GAME_DATE', 'OPPONENT_TEAM_NAME', 'TEAM_VICTORY_INDICATOR']], 
-                on='GAME_ID'
-            ).sort_values(['GAME_DATE', 'RUN_START_CLOCK'], ascending=[False, False])
-            
-            display_runs['Result'] = display_runs['TEAM_VICTORY_INDICATOR'].apply(lambda x: "✅ W" if x else "❌ L")
-            display_runs['GAME_DATE'] = pd.to_datetime(display_runs['GAME_DATE']).dt.date
-            
-            final_table = display_runs[['GAME_DATE', 'OPPONENT_TEAM_NAME', 'Result', 'TOTAL_RUN_POINTS', 'NUM_SCORING_PLAYS_IN_RUN', 'RUN_START_CLOCK', 'RUN_END_CLOCK']]
-            final_table.columns = ['Date', 'Opponent', 'Game Result', 'Points', 'Plays', 'Start', 'End']
-            
-            st.dataframe(final_table, use_container_width=True, hide_index=True)
+    st.dataframe(display_log.style.apply(lambda row: ['background-color: rgba(59, 18, 245, 0.1)' if 'GONE' in str(row.Type) else 'background-color: rgba(255, 75, 75, 0.1)'] * len(row), axis=1), use_container_width=True, hide_index=True)
 
     # --- 4. TRENDS ---
-    st.divider()
-    st.markdown(f"### 📈 Trends: {team_blue} vs Opponents{filter_status}", unsafe_allow_html=True)
+    # st.divider()
+    # st.markdown(f"### 📈 Trends: {team_blue} vs Opponents{filter_status}", unsafe_allow_html=True)
     
-    suffix = st.selectbox("Select Statistic", ['POINTS', 'TURNOVERS', 'STEALS', 'BLOCKS', 'REBOUNDS_OFF', 'REBOUNDS_DEF'])
-    t_c, o_c = f"TEAM_{suffix}", f"OPPONENT_{suffix}"
+    # suffix = st.selectbox("Select Statistic", ['POINTS', 'TURNOVERS', 'STEALS', 'BLOCKS', 'REBOUNDS_OFF', 'REBOUNDS_DEF'])
+    # t_c, o_c = f"TEAM_{suffix}", f"OPPONENT_{suffix}"
     
-    plot_df = team_games.copy()
-    for col in [t_c, o_c]:
-        plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce').fillna(0)
+    # plot_df = team_games.copy()
+    # for col in [t_c, o_c]:
+    #     plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce').fillna(0)
 
-    metric_label = suffix.replace('_', ' ').title()
-    fig = go.Figure()
+    # metric_label = suffix.replace('_', ' ').title()
+    # fig = go.Figure()
 
-    # Team Trace
-    fig.add_trace(go.Scatter(
-        x=plot_df['GAME_DATE'], y=plot_df[t_c],
-        mode='lines+markers', name=selected_team,
-        line=dict(color="#3B12F5", width=3),
-        customdata=np.stack((plot_df['OPPONENT_TEAM_NAME'], plot_df[o_c]), axis=-1),
-        hovertemplate=f"<b>%{{x}} - %{{customdata[0]}}</b><br>{metric_label}: %{{y}}<br>Opponent {metric_label}: %{{customdata[1]}}<extra></extra>"
-    ))
+    # # Team Trace
+    # fig.add_trace(go.Scatter(
+    #     x=plot_df['GAME_DATE'], y=plot_df[t_c],
+    #     mode='lines+markers', name=selected_team,
+    #     line=dict(color="#3B12F5", width=3),
+    #     customdata=np.stack((plot_df['OPPONENT_TEAM_NAME'], plot_df[o_c]), axis=-1),
+    #     hovertemplate=f"<b>%{{x}} - %{{customdata[0]}}</b><br>{metric_label}: %{{y}}<br>Opponent {metric_label}: %{{customdata[1]}}<extra></extra>"
+    # ))
 
-    # Opponent Trace
-    fig.add_trace(go.Scatter(
-        x=plot_df['GAME_DATE'], y=plot_df[o_c],
-        mode='lines+markers', name="Opponent",
-        line=dict(color="#FF4B4B", width=3), hoverinfo='skip' 
-    ))
+    # # Opponent Trace
+    # fig.add_trace(go.Scatter(
+    #     x=plot_df['GAME_DATE'], y=plot_df[o_c],
+    #     mode='lines+markers', name="Opponent",
+    #     line=dict(color="#FF4B4B", width=3), hoverinfo='skip' 
+    # ))
 
-    # Safe Trendlines
-    if len(plot_df) > 1:
-        for col, color, lab in [(t_c, "#3B12F5", selected_team), (o_c, "#FF4B4B", "Opponent")]:
-            y_vals = plot_df[col].values
-            x_vals = np.arange(len(y_vals))
-            try:
-                z = np.polyfit(x_vals, y_vals, 1)
-                p = np.poly1d(z)
-                fig.add_trace(go.Scatter(x=plot_df['GAME_DATE'], y=p(x_vals), mode='lines',
-                                         line=dict(dash='dot', color=color, width=1.5), showlegend=False, hoverinfo='skip'))
-            except: continue
+    # # Safe Trendlines
+    # if len(plot_df) > 1:
+    #     for col, color, lab in [(t_c, "#3B12F5", selected_team), (o_c, "#FF4B4B", "Opponent")]:
+    #         y_vals = plot_df[col].values
+    #         x_vals = np.arange(len(y_vals))
+    #         try:
+    #             z = np.polyfit(x_vals, y_vals, 1)
+    #             p = np.poly1d(z)
+    #             fig.add_trace(go.Scatter(x=plot_df['GAME_DATE'], y=p(x_vals), mode='lines',
+    #                                      line=dict(dash='dot', color=color, width=1.5), showlegend=False, hoverinfo='skip'))
+    #         except: continue
 
-    fig.update_layout(template="plotly_dark", hovermode="x", xaxis_title="Game Date", yaxis_title=metric_label,
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True)
+    # fig.update_layout(template="plotly_dark", hovermode="x", xaxis_title="Game Date", yaxis_title=metric_label,
+    #                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    # st.plotly_chart(fig, use_container_width=True)
 
     # --- 5. GAME LOG ---
     st.divider()
