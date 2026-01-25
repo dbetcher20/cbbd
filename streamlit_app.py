@@ -32,14 +32,15 @@ def get_private_key():
 def load_all_data():
     conn = st.connection("snowflake", private_key=get_private_key())
     df_teams = conn.query("SELECT * FROM cbb_data.views.dim_team")
+    df_players = conn.query("SELECT * FROM cbb_data.lake.team_roster")
     df_ato = conn.query("SELECT * FROM cbb_data.views.fact_ato_results")
     df_games = conn.query("SELECT * FROM cbb_data.views.fact_game_team_stats")
     df_crushers = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_offensive_crushers")
     df_kills = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_defensive_kills")
     df_scoring_runs = conn.query("SELECT * FROM cbb_data.views.fact_scoring_runs")
     df_lineup_stats = conn.query("select * from cbb_data.views.fact_lineup_stats")
-    return df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats
-df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats = load_all_data()
+    return df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats, df_players
+df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats, df_players = load_all_data()
 
 team_list = sorted(df_teams['TEAM_NAME'].unique())
 try:
@@ -76,13 +77,28 @@ with st.sidebar:
             ["🏠 Home", 
              "📊 Team Breakdown", 
              "⏱️ After Timeout Efficiency",
-             "🔥 Momentum & Adjustments"
+             "🔥 Momentum & Adjustments",
+             "👤 Player Analysis"
              ],
         key="main_nav"
     )
     
     st.divider()
     selected_team = st.selectbox("Selected Team Focus", team_list, index=default_ix)
+
+    with st.sidebar:
+        st.header("👤 Player Selection")
+        
+        # Filter the roster for only the selected team
+        available_players = df_players[df_players['TEAM_NAME'] == selected_team]
+        player_names = sorted(available_players['PLAYER_NAME'].unique())
+        
+        selected_player = st.selectbox(
+            "Choose a Player",
+            options=player_names,
+            index=0 if len(player_names) > 0 else None,
+            help="Select a player from the team roster."
+        )
 
 # REPORT DISPLAYS
 
@@ -762,3 +778,44 @@ elif selection == "🔥 Momentum & Adjustments":
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )    
     st.plotly_chart(fig_scatter, use_container_width=True)
+
+# * PLAYER STATS *
+elif selection == "👤 Player Analysis":
+    if not selected_player:
+        st.warning("Please select a player in the sidebar.")
+    else:
+        # Get specific player data
+        p_bio = df_players[
+            (df_players['TEAM_NAME'] == selected_team) & 
+            (df_players['PLAYER_NAME'] == selected_player)
+        ].iloc[0]
+
+        st.markdown(f"## {selected_player}")
+        st.markdown(f"#### {p_bio['TEAM_NAME']} | #{p_bio.get('JERSEY', '00')}")
+        
+        st.divider()
+
+        # Bio Card Layout
+        col_bio, col_metrics = st.columns([1, 2])
+
+        with col_bio:
+            with st.container(border=True):
+                # Using an icon or placeholder if you don't have images yet
+                st.markdown("### 🏃 Vitals")
+                st.write(f"**Position:** {p_bio['POSITION']}")
+                st.write(f"**Height:** {p_bio['HEIGHT']}")
+                st.write(f"**Weight:** {p_bio['WEIGHT']} lbs")
+        
+        # with col_metrics:
+        #     # Quick summary of their season-long box score
+        #     st.markdown("### 📈 Season Snapshot")
+        #     m1, m2, m3 = st.columns(3)
+        #     # Replace these with your actual column names from df_players
+        #     m1.metric("PPG", f"{p_bio.get('pts_per_game', 0.0):.1f}")
+        #     m2.metric("RPG", f"{p_bio.get('reb_per_game', 0.0):.1f}")
+        #     m3.metric("APG", f"{p_bio.get('ast_per_game', 0.0):.1f}")
+
+        # Placeholder for the On/Off section we'll build next
+        st.write("")
+        with st.expander("🔍 Preview: Advanced Impact Metrics"):
+            st.info("On/Off Court analysis coming in the next update.")
