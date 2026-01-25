@@ -37,8 +37,9 @@ def load_all_data():
     df_crushers = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_offensive_crushers")
     df_kills = conn.query("SELECT * FROM cbb_data.views.fact_consecutive_possessions_defensive_kills")
     df_scoring_runs = conn.query("SELECT * FROM cbb_data.views.fact_scoring_runs")
-    return df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs
-df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs = load_all_data()
+    df_lineup_stats = conn.query("select * from cbb_data.views.fact_lineup_stats")
+    return df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats
+df_teams, df_ato, df_games, df_crushers, df_kills, df_scoring_runs, df_lineup_stats = load_all_data()
 
 team_list = sorted(df_teams['TEAM_NAME'].unique())
 try:
@@ -223,6 +224,71 @@ elif selection == "📊 Team Breakdown":
         p_c = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE'] == conf])
         p_t = get_pct(col, val, all_teams_bench[all_teams_bench['CONFERENCE_TYPE'] == tier])
         with c_def[i]: draw_card(lab, f"{val:{fmt}}", p_g, p_c, p_t, conf)
+
+# --- 4.5 LINEUP EFFICIENCY (TOP 5 / BOTTOM 5) ---
+    st.divider()
+    
+    # 1. Configuration UI
+    st.markdown(f"### 🖐️ Lineup Efficiency: {team_blue}{filter_status}", unsafe_allow_html=True)
+    
+    # Slider for sample size control
+    min_mins_filter = st.slider("Minimum Minutes Played Threshold", 1, 30, 5)
+
+    # 2. Filter and Prep Data
+    team_lineups = df_lineup_stats[df_lineup_stats['TEAM_NAME'] == selected_team].copy()
+    
+    if team_lineups.empty:
+        st.info("No lineup data available for this team.")
+    else:
+        team_lineups['minutes'] = team_lineups['TOTAL_SECONDS'] / 60
+        max_mins = team_lineups['minutes'].max()
+
+        # Filter by the slider value
+        qualified_lineups = team_lineups[team_lineups['minutes'] >= min_mins_filter].copy()
+        
+        if qualified_lineups.empty:
+            st.warning(f"No lineups have played more than {min_mins_filter} minutes. Try lowering the threshold.")
+        else:
+            top_5 = qualified_lineups.sort_values('NET_RATING', ascending=False).head(5)
+            bot_5 = qualified_lineups.sort_values('NET_RATING', ascending=True).head(5)
+
+            col_top, col_bot = st.columns(2)
+
+            with col_top:
+                st.subheader("✅ Top 5 Lineups")
+                for _, row in top_5.iterrows():
+                    with st.container(border=True):
+                        # Header: Rating and Minutes
+                        c1, c2 = st.columns([1, 1])
+                        c1.markdown(f"**Net Rating: :green[{row['NET_RATING']:+.1f}]**")
+                        c2.markdown(f"**Total Mins: {row['minutes']:.1f}**")
+                        
+                        # Progress bar with explicit label
+                        share_pct = (row['minutes'] / max_mins) * 100
+                        st.caption(f"Rotation Share (vs. Most Used Lineup): {share_pct:.0f}%")
+                        st.progress(min(row['minutes'] / max_mins, 1.0))
+                        
+                        # Lineup Names
+                        names_list = row['LINEUP_NAME'].replace('-', ' • ')
+                        st.markdown(f"<div style='font-size: 0.85rem; color: #888;'>{names_list}</div>", unsafe_allow_html=True)
+
+            with col_bot:
+                st.subheader("⚠️ Bottom 5 Lineups")
+                for _, row in bot_5.iterrows():
+                    with st.container(border=True):
+                        # Header: Rating and Minutes
+                        c1, c2 = st.columns([1, 1])
+                        c1.markdown(f"**Net Rating: :red[{row['NET_RATING']:+.1f}]**")
+                        c2.markdown(f"**Total Mins: {row['minutes']:.1f}**")
+                        
+                        # Progress bar with explicit label
+                        share_pct = (row['minutes'] / max_mins) * 100
+                        st.caption(f"Rotation Share (vs. Most Used Lineup): {share_pct:.0f}%")
+                        st.progress(min(row['minutes'] / max_mins, 1.0))
+                        
+                        # Lineup Names
+                        names_list = row['LINEUP_NAME'].replace('-', ' • ')
+                        st.markdown(f"<div style='font-size: 0.85rem; color: #888;'>{names_list}</div>", unsafe_allow_html=True)
 
    # --- 5. SCORING MOMENTUM & RESILIENCE ---
     st.divider()
