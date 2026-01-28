@@ -361,7 +361,7 @@ elif selection == "📊 Team Breakdown":
             
             fig_f = px.bar(pd.DataFrame(f_stats), x="Bin", y="WinPct", text="Rec", color="Color", color_discrete_map="identity", template="plotly_dark", height=180)
             fig_f.update_layout(margin=dict(l=5,r=5,t=5,b=5), yaxis_range=[0,105], showlegend=False, xaxis={'categoryorder':'array', 'categoryarray': ordered_f, 'title': None})
-            st.plotly_chart(fig_f, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig_f, use_container_width=True, config={'displayModeBar': False,'scrollZoom': False,'showAxisDragHandles': False})
 
     with col_given:
         val_against = len(runs_against)
@@ -386,7 +386,7 @@ elif selection == "📊 Team Breakdown":
             
             fig_a = px.bar(pd.DataFrame(a_stats), x="Bin", y="WinPct", text="Rec", color="Color", color_discrete_map="identity", template="plotly_dark", height=180)
             fig_a.update_layout(margin=dict(l=5,r=5,t=5,b=5), yaxis_range=[0,105], showlegend=False, xaxis={'categoryorder':'array', 'categoryarray': ordered_a, 'title': None})
-            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False,'scrollZoom': False,'showAxisDragHandles': False})
 
     # --- 6. UNIFIED MOMENTUM LOG ---
     st.write("")
@@ -467,7 +467,7 @@ elif selection == "📊 Team Breakdown":
         yaxis=dict(autorange="reversed") # Better teams give up FEWER runs, so we reverse Y
     )
 
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_scatter, use_container_width=True, config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
     
     st.caption("💡 **Note:** The Y-axis is reversed. Top-Right represents the 'Elite' quadrant (Many runs made, few given up). Bubble size reflects overall Win %.")
 
@@ -519,7 +519,7 @@ elif selection == "⏱️ After Timeout Efficiency":
     )
     fig_rank.update_traces(hovertemplate="Team: %{y}<br>PPP: %{x}<extra></extra>")
     fig_rank.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
-    st.plotly_chart(fig_rank, use_container_width=True)
+    st.plotly_chart(fig_rank, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
     # --- 3. EFFICIENCY VS. VOLUME (SCATTERPLOT FIX) ---
     st.divider()
@@ -568,7 +568,7 @@ elif selection == "⏱️ After Timeout Efficiency":
                               annotation_text=f" {label}: {val:.2f}", annotation_position="top right")
 
     fig_scatter.update_layout(showlegend=False) # Hide legend since names are on plot
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_scatter, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
     # --- 4. STRATEGY DNA (STACKED BAR) ---
     st.divider()
@@ -597,7 +597,7 @@ elif selection == "⏱️ After Timeout Efficiency":
                             hovertemplate="Team: %{y}<br>Percentage: %{x}%<extra></extra>",
                             textposition='inside')
     fig_stack.update_layout(xaxis_ticksuffix="%", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig_stack, use_container_width=True)
+    st.plotly_chart(fig_stack, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
 # * MOMENTUM & ADJUSTMENTS *
 elif selection == "🔥 Momentum & Adjustments":
@@ -675,12 +675,12 @@ elif selection == "🔥 Momentum & Adjustments":
                 paper_bgcolor="rgba(0,0,0,0)", 
                 plot_bgcolor="rgba(0,0,0,0)"
             )
-            st.plotly_chart(fig_c, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig_c, use_container_width=True, config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
         c_trend = c_df[c_df['OFFENSIVE_CRUSH_INDICATOR'] == 1].groupby('GAME_MINUTE').size().reset_index(name='count')
         fig_wf_c = px.bar(c_trend, x='GAME_MINUTE', y='count', template="plotly_dark", color_discrete_sequence=['#3B12F5'], height=250)
         fig_wf_c.update_layout(xaxis=dict(range=[0,42]), margin=dict(l=0,r=0,t=10,b=0))
-        st.plotly_chart(fig_wf_c, use_container_width=True)
+        st.plotly_chart(fig_wf_c, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
     # --- DEFENSIVE SIDE ---
     with col_def:
@@ -716,12 +716,12 @@ elif selection == "🔥 Momentum & Adjustments":
                 paper_bgcolor="rgba(0,0,0,0)", 
                 plot_bgcolor="rgba(0,0,0,0)"
             )
-            st.plotly_chart(fig_k, use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(fig_k, use_container_width=True, config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
         k_trend = k_df[k_df['DEFENSIVE_KILL_INDICATOR'] == 1].groupby('GAME_MINUTE').size().reset_index(name='count')
         fig_wf_k = px.bar(k_trend, x='GAME_MINUTE', y='count', template="plotly_dark", color_discrete_sequence=['#FF4B4B'], height=250)
         fig_wf_k.update_layout(xaxis=dict(range=[0,42]), margin=dict(l=0,r=0,t=10,b=0))
-        st.plotly_chart(fig_wf_k, use_container_width=True)
+        st.plotly_chart(fig_wf_k, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
     # --- 3. THE HALFTIME PIVOT ---
     st.divider()
@@ -777,7 +777,7 @@ elif selection == "🔥 Momentum & Adjustments":
         margin=dict(l=0, r=0, t=20, b=0),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )    
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_scatter, use_container_width=True,config={'scrollZoom': False,'displayModeBar': False,'showAxisDragHandles': False})
 
 # * PLAYER STATS *
 elif selection == "👤 Player Analysis":
